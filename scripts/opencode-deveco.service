@@ -1,0 +1,39 @@
+# systemd user service for opencode-deveco proxy (Linux/mac).
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp scripts/opencode-deveco.service ~/.config/systemd/user/
+#   # edit the ExecStart / WorkingDirectory paths below to match your install
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now opencode-deveco
+#
+# Logs:  journalctl --user -u opencode-deveco -f
+# Status: systemctl --user status opencode-deveco
+
+[Unit]
+Description=opencode-deveco proxy (DevEco Code model bridge for opencode)
+After=network-online.target
+
+[Service]
+Type=simple
+# >>> EDIT THESE to your install location >>>
+WorkingDirectory=%h/projects/opencode-deveco
+ExecStart=%h/projects/opencode-deveco/dist/proxy.js
+# <<< EDIT <<<
+# Run with node explicitly (uncomment if dist/proxy.js isn't executable):
+# ExecStart=/usr/bin/env node %h/projects/opencode-deveco/dist/proxy.js
+
+Environment=DEVECO_PROXY_PORT=17128
+Environment=DEVECO_LOG_LEVEL=info
+# jwtToken is read from XDG_CONFIG_HOME/opencode/opencode-deveco/jwt.json
+Environment=XDG_CONFIG_HOME=%h/.config
+
+Restart=on-failure
+RestartSec=3
+
+# Logging → journald (view with: journalctl --user -u opencode-deveco -f)
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
