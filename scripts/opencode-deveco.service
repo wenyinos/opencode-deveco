@@ -18,7 +18,7 @@ After=network-online.target
 Type=simple
 # >>> EDIT THESE to your install location >>>
 WorkingDirectory=%h/projects/opencode-deveco
-ExecStart=%h/projects/opencode-deveco/dist/proxy.js
+ExecStart=node %h/projects/opencode-deveco/dist/proxy.js
 # <<< EDIT <<<
 # Run with node explicitly (uncomment if dist/proxy.js isn't executable):
 # ExecStart=/usr/bin/env node %h/projects/opencode-deveco/dist/proxy.js
