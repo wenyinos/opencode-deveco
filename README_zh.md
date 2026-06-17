@@ -43,6 +43,8 @@ git clone <this-repo> opencode-deveco
 cd opencode-deveco
 npm install
 npm run build          # 生成 dist/
+npm run test           # 运行测试
+npm run lint           # 检查代码风格
 ```
 
 ### 2. 让 opencode 指向代理
@@ -146,10 +148,12 @@ opencode run "say hi" -m deveco/GLM-5.1   # 通过代理发真实请求
 | 方法 & 路径 | 用途 |
 |---|---|
 | `POST /v2/chat/completions` | 转发到 DevEco（流式 或 `/no-stream`） |
-| `GET  /v2/models` | DevEco 模型列表（动态获取，失败回退静态） |
+| `GET  /v2/models` | DevEco 模型列表（动态获取，失败回退静态；1 小时缓存 TTL） |
 | `GET  /v2/login` | 强制触发浏览器华为 OAuth 登录 |
 | `GET  /v2/status` | `{ logged_in, user, expires_in_ms }` |
 | `GET  /v2/logout` | 清除已存凭证 |
+
+> 所有端点均可省略 `/v2` 前缀（如 `GET /status`）。
 
 ---
 
@@ -207,6 +211,17 @@ opencode run "say hi" -m deveco/GLM-5.1   # 通过代理发真实请求
 
 ---
 
+## 近期改进
+
+- **优雅关停** — 代理收到 SIGTERM/SIGINT 后会等待正在处理的请求完成再退出，systemd 服务停止时不再丢失请求。
+- **请求超时** — 转发到 DevEco 的请求 60 秒超时；login/token 端点 20 秒超时，避免后端卡死导致代理无限挂起。
+- **模型列表缓存 TTL** — 动态模型列表每小时自动刷新（此前永不过期，需重启才能获取新模型）。
+- **统一 HTTP 栈** — 删除自定义 `HttpClient`，所有 HTTP 调用统一使用 Node 内置 `fetch`。
+- **ESLint + 测试** — 新增 `npm run lint` 和 `npm run test`。
+- **`/v2` 前缀可选** — 所有代理端点均可省略 `/v2` 前缀。
+
+---
+
 ## 故障排查
 
 - **`opencode run ... -m deveco/glm-5` 报连接被拒** → 代理没在跑。启动它（`node dist/proxy.js`）。
@@ -225,8 +240,7 @@ opencode run "say hi" -m deveco/GLM-5.1   # 通过代理发真实请求
 | [`src/plugin.ts`](./src/plugin.ts) | opencode 插件（代理生命周期 + 前向兼容 auth hook） |
 | [`src/auth-login.ts`](./src/auth-login.ts) | `LocalAuthServer` + `LoginService`（华为 OAuth 流程） |
 | [`src/token-store.ts`](./src/token-store.ts) | jwtToken 的 JSON 持久化 |
-| [`src/models.ts`](./src/models.ts) | 动态模型列表拉取 + 静态回退 |
-| [`src/http-client.ts`](./src/http-client.ts) | 极简 node http/https 客户端 |
+| [`src/models.ts`](./src/models.ts) | 动态模型列表拉取 + 静态回退（1 小时缓存 TTL） |
 | [`src/config.ts`](./src/config.ts) | 常量、默认值、端点 |
 
 [`DevEco-OpenCode-Plugin-Plan.md`](./DevEco-OpenCode-Plugin-Plan.md) 是最初的设计文档（写在转代理方案之前）。

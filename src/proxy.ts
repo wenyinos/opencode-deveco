@@ -44,6 +44,12 @@ export interface ProxyOptions {
   hostname?: string
 }
 
+interface UsageInfo {
+  prompt_tokens?: number
+  completion_tokens?: number
+  completion_tokens_details?: { reasoning_tokens?: number }
+}
+
 export class DevEcoProxy {
   private readonly port: number
   private readonly hostname: string
@@ -53,6 +59,8 @@ export class DevEcoProxy {
   private readonly tokenStore
   // Per-session Chat-Id mapping for the DevEco backend.
   private readonly sessionChatIdMap = new Map<string, string>()
+  // Track in-flight requests for graceful shutdown.
+  private readonly activeRequests = new Set<http.ServerResponse>()
 
   constructor(opts: ProxyOptions = {}) {
     this.port = opts.port ?? 17128
@@ -79,12 +87,19 @@ export class DevEcoProxy {
 
   async stop(): Promise<void> {
     if (!this.server) return
+    // Stop accepting new connections; wait for in-flight requests to finish.
     await new Promise<void>((resolve) => this.server!.close(() => resolve()))
     this.server = null
   }
 
   getPort(): number {
     return this.port
+  }
+
+  /** Track a response so stop() can wait for it to finish. */
+  private trackRequest(res: http.ServerResponse): void {
+    this.activeRequests.add(res)
+    res.on("finish", () => this.activeRequests.delete(res))
   }
 
   // ---------------------------------------------------------------------------
@@ -151,12 +166,14 @@ export class DevEcoProxy {
   // ---------------------------------------------------------------------------
 
   private async handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    this.trackRequest(res)
     const host = req.headers.host || `${this.hostname}:${this.port}`
     const url = new URL(req.url ?? "/", `http://${host}`)
+    // Normalise: strip /v2 prefix so all route checks are simple.
+    const p = url.pathname.replace(/^\/v2/, "") || "/"
 
     try {
-      // Health/status — no auth needed.
-      if (url.pathname === "/v2/status" || url.pathname === "/status") {
+      if (p === "/status") {
         return this.json(res, 200, {
           logged_in: !!this.session,
           user: this.session?.userInfo?.userName ?? null,
@@ -164,8 +181,7 @@ export class DevEcoProxy {
         })
       }
 
-      if (url.pathname === "/v2/login" || url.pathname === "/login") {
-        // Force a fresh browser login.
+      if (p === "/login") {
         const result = await this.loginService.login()
         if (!result.success || !result.userInfo) {
           return this.json(res, 401, { error: result.error || "login failed" })
@@ -183,22 +199,20 @@ export class DevEcoProxy {
         })
       }
 
-      if (url.pathname === "/v2/logout" || url.pathname === "/logout") {
+      if (p === "/logout") {
         await this.loginService.logout()
         this.session = null
         return this.json(res, 200, { ok: true })
       }
 
-      // Model list — used by some clients; static fallback + dynamic.
-      if (url.pathname === "/v2/models" || url.pathname === "/models") {
+      if (p === "/models") {
         const token = await this.ensureToken().catch(() => "")
         const cfg = await getDevecoProviderConfig(token)
         const data = Object.keys(cfg.models ?? {}).map((id) => ({ id, object: "model" }))
         return this.json(res, 200, { object: "list", data })
       }
 
-      // Chat completions — the main path.
-      if (url.pathname.endsWith("/chat/completions")) {
+      if (p === "/chat/completions") {
         return this.forwardChat(req, res)
       }
 
@@ -221,12 +235,11 @@ export class DevEcoProxy {
     // Read the full request body.
     const bodyBuffer = await this.readBody(req)
     let stream = true
-    let parsed: unknown = undefined
     let model = "?"
     try {
-      parsed = JSON.parse(bodyBuffer.toString("utf8"))
+      const parsed = JSON.parse(bodyBuffer.toString("utf8"))
       if (parsed && typeof parsed === "object") {
-        const obj = parsed as any
+        const obj = parsed as Record<string, unknown>
         if (obj.stream === false) stream = false
         if (typeof obj.model === "string") model = obj.model
       }
@@ -275,6 +288,7 @@ export class DevEcoProxy {
       method: "POST",
       headers,
       body: bodyInit,
+      signal: AbortSignal.timeout(60_000),
     }).catch((err) => {
       throw new Error(`upstream fetch failed: ${String(err)}`)
     })
@@ -295,6 +309,7 @@ export class DevEcoProxy {
             method: "POST",
             headers,
             body: bodyInit,
+            signal: AbortSignal.timeout(60_000),
           })
         }
       }
@@ -316,14 +331,13 @@ export class DevEcoProxy {
 
     // For logging: capture the last SSE `usage` (streaming) or the JSON
     // `usage` field (non-streaming). We accumulate a small tail buffer.
-    let usage: any = undefined
+    let usage: UsageInfo | undefined = undefined
     let lastChunkModel: string | undefined
     const tailChunks: Buffer[] = []
     const TAIL_KEEP = 4 // keep last few SSE chunks to find usage
 
     if (upstream.body) {
       const reader = upstream.body.getReader()
-      // eslint-disable-next-line no-constant-condition
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
@@ -417,10 +431,26 @@ const isDirectRun = (() => {
 if (isDirectRun) {
   const portArg = process.argv.find((a) => a.startsWith("--port="))
   const port = portArg ? parseInt(portArg.split("=")[1], 10) : 17128
-  runProxy({ port }).catch((err) => {
-    log.error("proxy failed to start", { error: String(err) })
-    process.exit(1)
-  })
+
+  let proxy: DevEcoProxy | null = null
+
+  async function shutdown() {
+    if (!proxy) return
+    log.info("shutting down gracefully...")
+    await proxy.stop()
+    process.exit(0)
+  }
+  process.on("SIGTERM", shutdown)
+  process.on("SIGINT", shutdown)
+
+  runProxy({ port })
+    .then((p) => {
+      proxy = p
+    })
+    .catch((err) => {
+      log.error("proxy failed to start", { error: String(err) })
+      process.exit(1)
+    })
 }
 
 export { DEVECO_BASE_URL, DEVECO_DEFAULTS }

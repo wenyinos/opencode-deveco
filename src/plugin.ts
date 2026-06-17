@@ -65,7 +65,7 @@ function startProxy(): Promise<DevEcoProxy> {
 // the dynamic fetch hasn't run yet. Does not clobber an existing entry.
 // ---------------------------------------------------------------------------
 
-function applyConfigHook(cfg: any): void {
+function applyConfigHook(cfg: { provider?: Record<string, unknown> }): void {
   try {
     if (!cfg || typeof cfg !== "object") return
     cfg.provider ??= {}
@@ -97,7 +97,7 @@ function isOAuthLike(v: unknown): v is {
   refresh?: string
   expires?: number
 } {
-  return !!v && typeof v === "object" && (v as any).type === "oauth"
+  return !!v && typeof v === "object" && (v as Record<string, unknown>).type === "oauth"
 }
 
 function buildAuthedFetch(

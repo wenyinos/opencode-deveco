@@ -51,6 +51,8 @@ git clone <this-repo> opencode-deveco
 cd opencode-deveco
 npm install
 npm run build          # produces dist/
+npm run test           # run tests
+npm run lint           # check code style
 ```
 
 ### 2. Point opencode at the proxy
@@ -162,10 +164,12 @@ opencode run "say hi" -m deveco/GLM-5.1 # real request through the proxy
 | Method & path | Purpose |
 |---|---|
 | `POST /v2/chat/completions` | forwarded to DevEco (stream or `/no-stream`) |
-| `GET  /v2/models` | DevEco model list (dynamic, static fallback) |
+| `GET  /v2/models` | DevEco model list (dynamic, static fallback; 1-hour cache TTL) |
 | `GET  /v2/login` | force a browser Huawei OAuth login |
 | `GET  /v2/status` | `{ logged_in, user, expires_in_ms }` |
 | `GET  /v2/logout` | clear stored credentials |
+
+> All endpoints also work without the `/v2` prefix (e.g. `GET /status`).
 
 ---
 
@@ -238,6 +242,22 @@ browser login.
 
 ---
 
+## Recent improvements
+
+- **Graceful shutdown** — the proxy drains in-flight requests on SIGTERM/SIGINT
+  before exiting (systemd service stops cleanly).
+- **Request timeout** — upstream DevEco requests timeout after 60s; login/token
+  endpoints timeout after 20s. No more infinite hangs when the backend is stuck.
+- **Model list cache TTL** — the dynamic model list refreshes automatically every
+  hour (previously cached forever until restart).
+- **Unified HTTP stack** — the custom `HttpClient` has been removed; all HTTP
+  calls now use Node's built-in `fetch`.
+- **ESLint + tests** — `npm run lint` and `npm run test` are now available.
+- **`/v2` prefix optional** — all proxy endpoints work with or without the `/v2`
+  prefix.
+
+---
+
 ## Troubleshooting
 
 - **`opencode run ... -m deveco/glm-5` fails with connection refused** → the
@@ -261,8 +281,7 @@ browser login.
 | [`src/plugin.ts`](./src/plugin.ts) | opencode plugin (proxy lifecycle + forward-compat auth hook) |
 | [`src/auth-login.ts`](./src/auth-login.ts) | `LocalAuthServer` + `LoginService` (Huawei OAuth flow) |
 | [`src/token-store.ts`](./src/token-store.ts) | jwtToken JSON persistence |
-| [`src/models.ts`](./src/models.ts) | dynamic model list fetch + static fallback |
-| [`src/http-client.ts`](./src/http-client.ts) | minimal node http/https client |
+| [`src/models.ts`](./src/models.ts) | dynamic model list fetch + static fallback (1-hour cache TTL) |
 | [`src/config.ts`](./src/config.ts) | constants, defaults, endpoints |
 
 See [`DevEco-OpenCode-Plugin-Plan.md`](./DevEco-OpenCode-Plugin-Plan.md) for the

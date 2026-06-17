@@ -13,7 +13,6 @@ import { exec } from "node:child_process"
 import { promisify } from "node:util"
 import crypto from "node:crypto"
 import http, { type IncomingMessage, type ServerResponse } from "node:http"
-import { httpClient } from "./http-client.js"
 import { type TokenStore } from "./token-store.js"
 import {
   ACCESS_TOKEN_EXPIRES_MS,
@@ -424,21 +423,24 @@ class LoginService {
 
   private async getJwtToken(tempToken: string): Promise<string> {
     const actualTempToken = tempToken.split("&")[0]
-    const params = {
+    const params = new URLSearchParams({
       tempToken: actualTempToken,
       site: "CN",
       version: "1.0.0",
       appid: this.config.appId,
-    }
-    const url = `${this.config.baseUrl}/${this.config.tempTokenCheckUrl}`
-    const response = await httpClient.get(url, { params })
+    })
+    const url = `${this.config.baseUrl}/${this.config.tempTokenCheckUrl}?${params}`
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(20_000),
+      headers: { "accept-language": "zh-CN" },
+    })
 
-    if (response.statusCode !== 200) {
-      log.error("failed to get jwtToken", { statusCode: response.statusCode })
-      throw new Error(`Failed to get jwtToken: ${response.statusCode}`)
+    if (!res.ok) {
+      log.error("failed to get jwtToken", { statusCode: res.status })
+      throw new Error(`Failed to get jwtToken: ${res.status}`)
     }
 
-    const jwtToken = response.data.trim()
+    const jwtToken = (await res.text()).trim()
     if (jwtToken.split(".").length !== 3) {
       log.error("invalid jwtToken format received", { tokenLength: jwtToken.length })
       throw new Error("Invalid jwtToken format")
@@ -467,14 +469,16 @@ class LoginService {
   }
 
   private async checkJwtToken(jwtToken: string): Promise<TokenCheckResponse> {
-    const headers = { refresh: "false", jwtToken }
     const url = `${this.config.baseUrl}/${this.config.jwtTokenCheckUrl}`
-    const response = await httpClient.get(url, { headers })
-    if (response.statusCode !== 200) {
-      log.error("failed to check jwtToken", { statusCode: response.statusCode })
-      throw new Error(`Failed to check jwtToken: ${response.statusCode}`)
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(20_000),
+      headers: { refresh: "false", jwtToken, "accept-language": "zh-CN" },
+    })
+    if (!res.ok) {
+      log.error("failed to check jwtToken", { statusCode: res.status })
+      throw new Error(`Failed to check jwtToken: ${res.status}`)
     }
-    return httpClient.parseJson<TokenCheckResponse>(response)
+    return (await res.json()) as TokenCheckResponse
   }
 
   /**
@@ -484,13 +488,15 @@ class LoginService {
   async refreshToken(jwtToken: string): Promise<RefreshResult | null> {
     const url = `${this.config.baseUrl}/${this.config.jwtTokenCheckUrl}`
     try {
-      const headers: Record<string, string> = { refresh: "true", jwtToken }
-      const response = await httpClient.get(url, { headers })
-      if (response.statusCode !== 200) {
-        log.error(`refreshToken failed: HTTP ${response.statusCode}`)
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(20_000),
+        headers: { refresh: "true", jwtToken, "accept-language": "zh-CN" },
+      })
+      if (!res.ok) {
+        log.error(`refreshToken failed: HTTP ${res.status}`)
         return null
       }
-      const result = httpClient.parseJson<TokenCheckResponse>(response)
+      const result = (await res.json()) as TokenCheckResponse
       if (!result.status || !result.userInfo) {
         log.error("refreshToken failed: invalid response", { status: result.status })
         return null

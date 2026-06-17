@@ -141,14 +141,20 @@ async function fetchModelsFromAPI(accessToken: string): Promise<FetchedModels> {
 // ---------------------------------------------------------------------------
 
 let cachedConfig: ProviderInfo | null = null
+let cachedConfigAt = 0
 let cachedTaskDefaultModelMap: Record<string, string> | null = null
+
+/** Cache TTL in ms — after this, the next request re-fetches from the API. */
+const CACHE_TTL_MS = 60 * 60 * 1000 // 1 hour
 
 /**
  * Returns the DevEco provider config. Tries the dynamic API first (cached on
  * success), and falls back to the static defaults on any failure.
  */
 export async function getDevecoProviderConfig(accessToken: string): Promise<ProviderInfo> {
-  if (cachedConfig) return cachedConfig
+  if (cachedConfig && Date.now() - cachedConfigAt < CACHE_TTL_MS) return cachedConfig
+  // Expired or missing — clear so a failed fetch doesn't return stale data forever.
+  cachedConfig = null
 
   const defaultBlacklist =
     DEVECO_DEFAULTS.taskDefaultModelMap.blacklist?.split(",") ?? []
@@ -165,6 +171,7 @@ export async function getDevecoProviderConfig(accessToken: string): Promise<Prov
       models,
       taskDefaultModelMap?.blacklist?.split(",") ?? [],
     )
+    cachedConfigAt = Date.now()
     cachedTaskDefaultModelMap = taskDefaultModelMap ?? DEVECO_DEFAULTS.taskDefaultModelMap
     return cachedConfig
   } catch (err) {
@@ -181,5 +188,6 @@ export function getTaskDefaultModelMap(): Record<string, string> {
 /** Reset caches (used when the user re-logs in). */
 export function resetModelCache(): void {
   cachedConfig = null
+  cachedConfigAt = 0
   cachedTaskDefaultModelMap = null
 }

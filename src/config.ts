@@ -112,8 +112,8 @@ export const DEVECO_DEFAULTS = {
     api: DEVECO_API_BASE,
     env: [] as string[],
     models: {
-      "glm-5": {
-        name: "glm-5",
+      "GLM-5.1": {
+        name: "GLM-5.1",
         reasoning: true,
         tool_call: true,
         limit: { context: 202752, output: 131072 },
@@ -127,7 +127,7 @@ export const DEVECO_DEFAULTS = {
     } satisfies Record<string, ModelInfo>,
   } satisfies ProviderInfo,
   taskDefaultModelMap: {
-    small_model: "glm-5",
+    small_model: "GLM-5.1",
     ui_verification: "Qwen2.5-VL-72B",
     blacklist: "Qwen2.5-VL-72B",
   } as Record<string, string>,
