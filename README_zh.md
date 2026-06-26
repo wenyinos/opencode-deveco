@@ -148,7 +148,7 @@ opencode run "say hi" -m deveco/GLM-5.1   # 通过代理发真实请求
 | 方法 & 路径 | 用途 |
 |---|---|
 | `POST /v2/chat/completions` | OpenAI 兼容 — 转发到 DevEco |
-| `POST /anthropic` | Anthropic Messages API — 自动转换为 OpenAI 格式 |
+| `POST /anthropic/v1/messages` | Anthropic Messages API — 自动转换为 OpenAI 格式 |
 | `GET  /v2/models` | DevEco 模型列表（动态获取，失败回退静态；1 小时缓存 TTL） |
 | `GET  /v2/login` | 强制触发浏览器华为 OAuth 登录 |
 | `GET  /v2/status` | `{ logged_in, user, expires_in_ms }` |
@@ -160,7 +160,7 @@ opencode run "say hi" -m deveco/GLM-5.1   # 通过代理发真实请求
 
 ## Claude Code 集成
 
-代理同时支持 **Anthropic Messages API**（`POST /anthropic`），自动将请求转换为 OpenAI Chat Completions 格式。这让 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 可以直接使用 DevEco 模型。
+代理同时支持 **Anthropic Messages API**（`POST /anthropic/v1/messages`），自动将请求转换为 OpenAI Chat Completions 格式。这让 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 可以直接使用 DevEco 模型。
 
 启动 Claude Code 前设置以下环境变量：
 

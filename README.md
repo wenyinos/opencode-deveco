@@ -164,7 +164,7 @@ opencode run "say hi" -m deveco/GLM-5.1 # real request through the proxy
 | Method & path | Purpose |
 |---|---|
 | `POST /v2/chat/completions` | OpenAI-compatible — forwarded to DevEco |
-| `POST /anthropic` | Anthropic Messages API — auto-translated to/from OpenAI |
+| `POST /anthropic/v1/messages` | Anthropic Messages API — auto-translated to/from OpenAI |
 | `GET  /v2/models` | DevEco model list (dynamic, static fallback; 1-hour cache TTL) |
 | `GET  /v2/login` | force a browser Huawei OAuth login |
 | `GET  /v2/status` | `{ logged_in, user, expires_in_ms }` |
@@ -176,7 +176,7 @@ opencode run "say hi" -m deveco/GLM-5.1 # real request through the proxy
 
 ## Claude Code integration
 
-The proxy also speaks the **Anthropic Messages API** (`POST /anthropic`),
+The proxy also speaks the **Anthropic Messages API** (`POST /anthropic/v1/messages`),
 auto-translating requests to OpenAI Chat Completions format for DevEco. This
 lets [Claude Code](https://docs.anthropic.com/en/docs/claude-code) use DevEco
 models directly.

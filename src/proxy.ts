@@ -222,7 +222,7 @@ export class DevEcoProxy {
         return this.forwardChat(req, res)
       }
 
-      if (p === "/anthropic" && req.method === "POST") {
+      if (p === "/anthropic/v1/messages" && req.method === "POST") {
         return this.forwardAnthropic(req, res)
       }
 
