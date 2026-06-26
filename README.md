@@ -163,13 +163,38 @@ opencode run "say hi" -m deveco/GLM-5.1 # real request through the proxy
 
 | Method & path | Purpose |
 |---|---|
-| `POST /v2/chat/completions` | forwarded to DevEco (stream or `/no-stream`) |
+| `POST /v2/chat/completions` | OpenAI-compatible — forwarded to DevEco |
+| `POST /anthropic` | Anthropic Messages API — auto-translated to/from OpenAI |
 | `GET  /v2/models` | DevEco model list (dynamic, static fallback; 1-hour cache TTL) |
 | `GET  /v2/login` | force a browser Huawei OAuth login |
 | `GET  /v2/status` | `{ logged_in, user, expires_in_ms }` |
 | `GET  /v2/logout` | clear stored credentials |
 
 > All endpoints also work without the `/v2` prefix (e.g. `GET /status`).
+
+---
+
+## Claude Code integration
+
+The proxy also speaks the **Anthropic Messages API** (`POST /anthropic`),
+auto-translating requests to OpenAI Chat Completions format for DevEco. This
+lets [Claude Code](https://docs.anthropic.com/en/docs/claude-code) use DevEco
+models directly.
+
+Set these environment variables before launching Claude Code:
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:17128/anthropic
+export ANTHROPIC_API_KEY=opencode-oauth-dummy-key
+export ANTHROPIC_MODEL=GLM-5.1
+```
+
+Then start Claude Code normally — it will send Anthropic Messages API requests
+to the proxy, which transforms them into OpenAI Chat Completions for DevEco and
+transforms the responses back.
+
+Supports: streaming, tool use (function calling), thinking/reasoning blocks, and
+image content.
 
 ---
 
@@ -279,6 +304,7 @@ browser login.
 |---|---|
 | [`src/proxy.ts`](./src/proxy.ts) | local proxy server (the live auth+forward path) |
 | [`src/plugin.ts`](./src/plugin.ts) | opencode plugin (proxy lifecycle + forward-compat auth hook) |
+| [`src/anthropic-transform.ts`](./src/anthropic-transform.ts) | Anthropic Messages ↔ OpenAI Chat protocol translation |
 | [`src/auth-login.ts`](./src/auth-login.ts) | `LocalAuthServer` + `LoginService` (Huawei OAuth flow) |
 | [`src/token-store.ts`](./src/token-store.ts) | jwtToken JSON persistence |
 | [`src/models.ts`](./src/models.ts) | dynamic model list fetch + static fallback (1-hour cache TTL) |

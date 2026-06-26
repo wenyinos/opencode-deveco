@@ -28,6 +28,12 @@ import {
 import { createLoginService, type UserInfo } from "./auth-login.js"
 import { JsonTokenStore } from "./token-store.js"
 import { getDevecoProviderConfig } from "./models.js"
+import {
+  anthropicToOpenaiChat,
+  openaiChatToAnthropic,
+  openaiChatStreamToAnthropic,
+  type AnthropicRequest,
+} from "./anthropic-transform.js"
 
 const DEVECO_ORIGIN = new URL(DEVECO_API_BASE).origin // https://cn.devecostudio.huawei.com
 const DEVECO_API_PREFIX = new URL(DEVECO_API_BASE).pathname.replace(/\/$/, "") // /sse/codeGenie/maas/v2
@@ -216,6 +222,10 @@ export class DevEcoProxy {
         return this.forwardChat(req, res)
       }
 
+      if (p === "/anthropic" && req.method === "POST") {
+        return this.forwardAnthropic(req, res)
+      }
+
       return this.json(res, 404, { error: `not found: ${url.pathname}` })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -316,6 +326,158 @@ export class DevEcoProxy {
     }
 
     return this.pipeResponse(responseToPipe, res, stream, ctx)
+  }
+
+  // ---------------------------------------------------------------------------
+  // Anthropic Messages API forwarding (Claude Code compatibility)
+  // ---------------------------------------------------------------------------
+
+  private async forwardAnthropic(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): Promise<void> {
+    const bodyBuffer = await this.readBody(req)
+
+    let anthropicReq: AnthropicRequest
+    try {
+      anthropicReq = JSON.parse(bodyBuffer.toString("utf8"))
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" })
+      return void res.end(JSON.stringify({
+        type: "error",
+        error: { type: "invalid_request_error", message: "Invalid JSON in request body" },
+      }))
+    }
+
+    const isStream = anthropicReq.stream === true
+    const model = anthropicReq.model
+
+    let accessToken: string
+    try {
+      accessToken = await this.ensureToken()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      res.writeHead(401, { "Content-Type": "application/json" })
+      return void res.end(JSON.stringify({
+        type: "error",
+        error: { type: "authentication_error", message: msg },
+      }))
+    }
+
+    // Transform Anthropic → OpenAI
+    const openaiReq = anthropicToOpenaiChat(anthropicReq)
+    const openaiBody = JSON.stringify(openaiReq)
+
+    const upstreamPath = isStream
+      ? `${DEVECO_API_PREFIX}/chat/completions`
+      : `${DEVECO_API_PREFIX}/no-stream/chat/completions`
+    const upstreamUrl = `${DEVECO_ORIGIN}${upstreamPath}`
+
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+      lang: "en",
+      "Chat-Id": crypto.randomUUID().replace(/-/g, ""),
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      "accept-language": "zh-CN",
+    }
+
+    const t0 = Date.now()
+    log.info(`-> POST anthropic/${isStream ? "stream" : "no-stream"} model=${model}`)
+
+    let upstream: Response
+    try {
+      upstream = await fetch(upstreamUrl, {
+        method: "POST",
+        headers,
+        body: openaiBody,
+        signal: AbortSignal.timeout(60_000),
+      })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      log.error("anthropic upstream fetch failed", { error: msg })
+      res.writeHead(502, { "Content-Type": "application/json" })
+      return void res.end(JSON.stringify({
+        type: "error",
+        error: { type: "api_error", message: msg },
+      }))
+    }
+
+    // 401 retry
+    if (upstream.status === 401 && this.session) {
+      const jwtToken = await this.tokenStore.load()
+      if (jwtToken) {
+        const refreshed = await this.loginService.refreshToken(jwtToken)
+        if (refreshed) {
+          this.session.accessToken = refreshed.accessToken
+          this.session.refreshToken = refreshed.refreshToken
+          this.session.expiresAt = Date.now() + ACCESS_TOKEN_EXPIRES_MS
+          headers.Authorization = `Bearer ${refreshed.accessToken}`
+          log.warn("anthropic upstream 401 → refreshed token, retrying once")
+          upstream = await fetch(upstreamUrl, {
+            method: "POST",
+            headers,
+            body: openaiBody,
+            signal: AbortSignal.timeout(60_000),
+          })
+        }
+      }
+    }
+
+    if (!upstream.ok) {
+      const errText = await upstream.text().catch(() => "")
+      log.error(`anthropic upstream error: HTTP ${upstream.status}`, { body: errText.slice(0, 200) })
+      res.writeHead(upstream.status, { "Content-Type": "application/json" })
+      return void res.end(JSON.stringify({
+        type: "error",
+        error: { type: "api_error", message: `Upstream returned HTTP ${upstream.status}: ${errText.slice(0, 500)}` },
+      }))
+    }
+
+    if (isStream) {
+      if (!upstream.body) {
+        res.writeHead(502, { "Content-Type": "application/json" })
+        return void res.end(JSON.stringify({
+          type: "error",
+          error: { type: "api_error", message: "Upstream returned no body for stream" },
+        }))
+      }
+
+      const anthropicStream = openaiChatStreamToAnthropic(upstream.body, model)
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      })
+
+      const reader = anthropicStream.getReader()
+      const pump = async () => {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          res.write(value)
+        }
+        res.end()
+        const dur = Date.now() - t0
+        log.info(`<- 200 ${dur}ms anthropic/stream model=${model}`)
+      }
+      void pump().catch((err) => {
+        log.error("anthropic stream pipe error", { error: String(err) })
+        res.end()
+      })
+      return
+    }
+
+    // Non-streaming
+    const openaiResponse = await upstream.json()
+    const anthropicResponse = openaiChatToAnthropic(openaiResponse, model)
+    const dur = Date.now() - t0
+    const usage = anthropicResponse.usage
+    log.info(
+      `<- 200 ${dur}ms anthropic/no-stream in=${usage.input_tokens} out=${usage.output_tokens} model=${model}`,
+    )
+    res.writeHead(200, { "Content-Type": "application/json" })
+    res.end(JSON.stringify(anthropicResponse))
   }
 
   private async pipeResponse(

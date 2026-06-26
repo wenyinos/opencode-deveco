@@ -147,13 +147,32 @@ opencode run "say hi" -m deveco/GLM-5.1   # 通过代理发真实请求
 
 | 方法 & 路径 | 用途 |
 |---|---|
-| `POST /v2/chat/completions` | 转发到 DevEco（流式 或 `/no-stream`） |
+| `POST /v2/chat/completions` | OpenAI 兼容 — 转发到 DevEco |
+| `POST /anthropic` | Anthropic Messages API — 自动转换为 OpenAI 格式 |
 | `GET  /v2/models` | DevEco 模型列表（动态获取，失败回退静态；1 小时缓存 TTL） |
 | `GET  /v2/login` | 强制触发浏览器华为 OAuth 登录 |
 | `GET  /v2/status` | `{ logged_in, user, expires_in_ms }` |
 | `GET  /v2/logout` | 清除已存凭证 |
 
 > 所有端点均可省略 `/v2` 前缀（如 `GET /status`）。
+
+---
+
+## Claude Code 集成
+
+代理同时支持 **Anthropic Messages API**（`POST /anthropic`），自动将请求转换为 OpenAI Chat Completions 格式。这让 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 可以直接使用 DevEco 模型。
+
+启动 Claude Code 前设置以下环境变量：
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:17128/anthropic
+export ANTHROPIC_API_KEY=opencode-oauth-dummy-key
+export ANTHROPIC_MODEL=GLM-5.1
+```
+
+然后正常启动 Claude Code 即可 —— 它会将 Anthropic Messages API 请求发送到代理，代理自动转换为 OpenAI 格式转发给 DevEco，再将响应转换回 Anthropic 格式。
+
+支持：流式传输、工具调用（function calling）、thinking/reasoning 块、图片内容。
 
 ---
 
@@ -238,6 +257,7 @@ opencode run "say hi" -m deveco/GLM-5.1   # 通过代理发真实请求
 |---|---|
 | [`src/proxy.ts`](./src/proxy.ts) | 本地代理服务（真正的 auth + 转发路径） |
 | [`src/plugin.ts`](./src/plugin.ts) | opencode 插件（代理生命周期 + 前向兼容 auth hook） |
+| [`src/anthropic-transform.ts`](./src/anthropic-transform.ts) | Anthropic Messages ↔ OpenAI Chat 协议转换 |
 | [`src/auth-login.ts`](./src/auth-login.ts) | `LocalAuthServer` + `LoginService`（华为 OAuth 流程） |
 | [`src/token-store.ts`](./src/token-store.ts) | jwtToken 的 JSON 持久化 |
 | [`src/models.ts`](./src/models.ts) | 动态模型列表拉取 + 静态回退（1 小时缓存 TTL） |

@@ -34,6 +34,7 @@ node dist/proxy.js   # 单独启动代理（前台，调试用）
 |---|---|
 | `src/proxy.ts` | 本地 HTTP 代理服务器（核心转发路径） |
 | `src/plugin.ts` | opencode 插件入口（config hook + auth hook + 代理生命周期） |
+| `src/anthropic-transform.ts` | Anthropic Messages ↔ OpenAI Chat 协议转换（请求/响应/流式） |
 | `src/auth-login.ts` | Huawei OAuth 浏览器登录流程（LocalAuthServer + LoginService） |
 | `src/token-store.ts` | jwtToken JSON 持久化存储（`~/.config/opencode/opencode-deveco/jwt.json`） |
 | `src/models.ts` | 动态模型列表拉取 + 静态回退（1 小时缓存 TTL） |
