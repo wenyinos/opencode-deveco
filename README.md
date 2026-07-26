@@ -117,7 +117,7 @@ powershell -ExecutionPolicy Bypass -File scripts\stop-windows.ps1
 nohup node dist/proxy.js > proxy.log 2>&1 &
 ```
 
-**Linux / macOS — systemd user service (autostart + auto-restart):**
+**Linux — systemd user service (autostart + auto-restart):**
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -130,6 +130,22 @@ journalctl --user -u opencode-deveco -f   # follow logs
 
 > The systemd unit enables lingering-free autostart on login. For boot-time
 > autostart (before login) run `loginctl enable-linger $USER`.
+
+**macOS — launchd user agent (autostart + auto-restart):**
+
+```bash
+mkdir -p ~/Library/LaunchAgents
+cp scripts/com.opencode-deveco.proxy.plist ~/Library/LaunchAgents/
+# edit the node / project / log paths in the copied file
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.opencode-deveco.proxy.plist
+tail -f ~/Library/Logs/opencode-deveco.log   # follow logs
+# stop: launchctl bootout gui/$(id -u)/com.opencode-deveco.proxy
+```
+
+> Keep it a LaunchAgent rather than a LaunchDaemon — agents run inside your
+> logged-in GUI session, which is what lets the automatic browser login work.
+> launchd starts with a bare `PATH` and never reads your shell profile, so the
+> plist needs the absolute path to `node` (`which node`).
 
 ### 4. Log in
 

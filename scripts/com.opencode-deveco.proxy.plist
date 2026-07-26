@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd user agent for the opencode-deveco proxy (macOS).
+
+  Install:
+    mkdir -p ~/Library/LaunchAgents
+    cp scripts/com.opencode-deveco.proxy.plist ~/Library/LaunchAgents/
+    # edit the paths marked EDIT below, then:
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.opencode-deveco.proxy.plist
+    # older macOS: launchctl load -w ~/Library/LaunchAgents/com.opencode-deveco.proxy.plist
+
+  Status / logs / stop:
+    launchctl list | grep opencode-deveco
+    tail -f ~/Library/Logs/opencode-deveco.log
+    launchctl bootout gui/$(id -u)/com.opencode-deveco.proxy
+
+  This must stay a LaunchAgent, never a LaunchDaemon: agents run inside your
+  logged-in GUI session, which is what lets the proxy open a browser for the
+  Huawei login. A daemon has no session to open into — you would be left
+  copying the URL out of GET /v2/login by hand.
+
+  launchd does not read your shell profile and starts with a bare PATH, so
+  ProgramArguments needs the absolute path to node (`which node`); nvm users
+  must point at the resolved version directory, not a shim.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.opencode-deveco.proxy</string>
+
+  <!-- >>> EDIT THESE to your node binary and install location >>> -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/node</string>
+    <string>/Users/me/projects/opencode-deveco/dist/proxy.js</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/me/projects/opencode-deveco</string>
+
+  <!-- launchd has no journal, so stdout/stderr go to files. -->
+  <key>StandardOutPath</key>
+  <string>/Users/me/Library/Logs/opencode-deveco.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/me/Library/Logs/opencode-deveco.log.err</string>
+  <!-- <<< EDIT <<< -->
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>DEVECO_PROXY_PORT</key>
+    <string>17128</string>
+    <key>DEVECO_LOG_LEVEL</key>
+    <string>info</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Restart after a crash but not after a clean stop (systemd's Restart=on-failure).
+       launchd sends SIGTERM on bootout, which the proxy drains in-flight requests on. -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+</dict>
+</plist>

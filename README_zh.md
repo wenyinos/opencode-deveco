@@ -104,7 +104,7 @@ powershell -ExecutionPolicy Bypass -File scripts\stop-windows.ps1
 nohup node dist/proxy.js > proxy.log 2>&1 &
 ```
 
-**Linux / macOS —— systemd 用户服务（自启 + 自动重启）：**
+**Linux —— systemd 用户服务（自启 + 自动重启）：**
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -116,6 +116,21 @@ journalctl --user -u opencode-deveco -f   # 实时看日志
 ```
 
 > 这个 systemd unit 在用户登录时自启。要实现开机自启（登录前就启动）运行 `loginctl enable-linger $USER`。
+
+**macOS —— launchd 用户代理（自启 + 自动重启）：**
+
+```bash
+mkdir -p ~/Library/LaunchAgents
+cp scripts/com.opencode-deveco.proxy.plist ~/Library/LaunchAgents/
+# 编辑复制后的文件里的 node / 项目 / 日志路径
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.opencode-deveco.proxy.plist
+tail -f ~/Library/Logs/opencode-deveco.log   # 实时看日志
+# 停止：launchctl bootout gui/$(id -u)/com.opencode-deveco.proxy
+```
+
+> 必须用 LaunchAgent 而不是 LaunchDaemon —— agent 跑在你已登录的图形会话里，
+> 自动打开浏览器登录才能生效。launchd 不读 shell 配置且 `PATH` 极简，
+> 所以 plist 里要写 `node` 的绝对路径（用 `which node` 查）。
 
 ### 4. 登录
 
