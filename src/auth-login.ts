@@ -9,8 +9,7 @@
 //
 // Public surface: createLoginService(tokenStore) -> { login, refreshToken, ... }.
 
-import { exec } from "node:child_process"
-import { promisify } from "node:util"
+import { spawn } from "node:child_process"
 import crypto from "node:crypto"
 import http, { type IncomingMessage, type ServerResponse } from "node:http"
 import { type TokenStore } from "./token-store.js"
@@ -21,8 +20,6 @@ import {
   type LoginConfig,
   log,
 } from "./config.js"
-
-const execAsync = promisify(exec)
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -87,11 +84,54 @@ interface JwtPayload {
   userName: string
   exp?: number
   iat?: number
+  nationalCode?: string
+  isRealName?: boolean
 }
 
 export interface RefreshResult {
   accessToken: string
   refreshToken: string
+}
+
+/** A login in progress: the URL to visit, and the eventual outcome. */
+export interface StartedLogin {
+  url: string
+  result: Promise<LoginResult>
+}
+
+/**
+ * Build the command that opens a URL in the default browser.
+ *
+ * Windows must go through cmd's `start`, which parses the command line itself:
+ * the login URL's `&` query separators would be read as command separators
+ * unless the URL stays double-quoted (node only auto-quotes arguments
+ * containing spaces, tabs or quotes — never `&`). macOS/Linux take the URL as
+ * a single argv with no shell in the way.
+ *
+ * Exported so the quoting can be tested off-Windows.
+ */
+export function browserOpenCommand(
+  platform: NodeJS.Platform,
+  url: string,
+): { command: string; args: string[]; shell: boolean } {
+  if (platform === "win32") return { command: `start "" "${url}"`, args: [], shell: true }
+  if (platform === "darwin") return { command: "open", args: [url], shell: false }
+  return { command: "xdg-open", args: [url], shell: false }
+}
+
+function toLoginFailure(err: unknown): LoginResult {
+  if (err instanceof LoginCancelledError) {
+    return { success: false, cancelled: true, error: err.message }
+  }
+  if (err instanceof UnsupportedRegionError) {
+    return {
+      success: false,
+      unsupportedRegion: true,
+      error: "Sorry, only China site accounts are currently supported",
+    }
+  }
+  log.error("login failed", { error: err instanceof Error ? err.message : String(err) })
+  return { success: false, error: err instanceof Error ? err.message : "Unknown error" }
 }
 
 // ---------------------------------------------------------------------------
@@ -318,28 +358,53 @@ class LoginService {
     this.config = { ...DEFAULT_CONFIG, ...config }
   }
 
+  /**
+   * Begin a login and return the Huawei login URL *immediately*, alongside a
+   * promise that settles when the browser callback arrives (up to
+   * config.timeout later).
+   *
+   * Splitting the flow this way lets a caller hand the URL to whoever asked —
+   * e.g. redirect a browser straight to it — instead of blocking for the whole
+   * callback window. Set `openBrowser: false` when the caller will navigate to
+   * the URL itself.
+   */
+  async startLogin(opts: { openBrowser?: boolean } = {}): Promise<StartedLogin> {
+    const clientSecret = this.generateClientSecret()
+    const server = new LocalAuthServer(
+      this.config.defaultPort,
+      clientSecret,
+      this.config.baseUrl,
+      this.config.successRedirectUrl,
+      this.config.failedRedirectUrl,
+    )
+    await server.start()
+    this.server = server
+
+    // Arm the callback promise BEFORE the login page can be reached, so
+    // resolveCallback/rejectCallback are ready the instant a request lands.
+    const callbackPromise = server.waitForCallback(this.config.timeout)
+    const url = this.buildLoginUrl(server.getPort(), clientSecret)
+    if (opts.openBrowser !== false) this.openLoginPage(url)
+
+    const result = this.finishLogin(callbackPromise).finally(async () => {
+      await server.stop().catch(() => {})
+      if (this.server === server) this.server = null
+    })
+    return { url, result }
+  }
+
   async login(): Promise<LoginResult> {
     try {
-      const clientSecret = this.generateClientSecret()
+      const { result } = await this.startLogin()
+      return await result
+    } catch (err) {
+      return toLoginFailure(err)
+    }
+  }
 
-      this.server = new LocalAuthServer(
-        this.config.defaultPort,
-        clientSecret,
-        this.config.baseUrl,
-        this.config.successRedirectUrl,
-        this.config.failedRedirectUrl,
-      )
-      await this.server.start()
-
-      // Set up the callback promise BEFORE opening the browser page so that
-      // resolveCallback/rejectCallback are ready the instant the server starts
-      // receiving requests.
-      const callbackPromise = this.server.waitForCallback(this.config.timeout)
-
-      await this.openLoginPage(this.server.getPort(), clientSecret)
-
+  private async finishLogin(callbackPromise: Promise<CallbackData>): Promise<LoginResult> {
+    try {
       const callbackData = await callbackPromise
-
       const jwtToken = await this.getJwtToken(callbackData.tempToken)
       const userInfo = await this.getUserInfoFromJwt(jwtToken)
 
@@ -348,26 +413,7 @@ class LoginService {
 
       return { success: true, userInfo, jwtToken }
     } catch (err) {
-      if (err instanceof LoginCancelledError) {
-        return { success: false, cancelled: true, error: err.message }
-      }
-      if (err instanceof UnsupportedRegionError) {
-        return {
-          success: false,
-          unsupportedRegion: true,
-          error: "Sorry, only China site accounts are currently supported",
-        }
-      }
-      log.error("login failed", { error: err instanceof Error ? err.message : String(err) })
-      return {
-        success: false,
-        error: err instanceof Error ? err.message : "Unknown error",
-      }
-    } finally {
-      if (this.server) {
-        await this.server.stop()
-        this.server = null
-      }
+      return toLoginFailure(err)
     }
   }
 
@@ -394,30 +440,37 @@ class LoginService {
     return crypto.randomUUID().replace(/-/g, "")
   }
 
-  private async openLoginPage(port: number, clientSecret: string): Promise<void> {
-    const loginUrl = `${this.config.baseUrl}/${this.config.authUrl}?port=${port}&appid=${this.config.appId}&code=${clientSecret}`
+  private buildLoginUrl(port: number, clientSecret: string): string {
+    return `${this.config.baseUrl}/${this.config.authUrl}?port=${port}&appid=${this.config.appId}&code=${clientSecret}`
+  }
 
-    const platform = process.platform
-    let command: string
-    switch (platform) {
-      case "win32":
-        command = `start "" "${loginUrl}"`
-        break
-      case "darwin":
-        command = `open "${loginUrl}"`
-        break
-      default:
-        command = `xdg-open "${loginUrl}"`
-        break
-    }
+  /**
+   * Best-effort browser open. Never blocks and never throws: when the proxy
+   * runs as a background service there may be no desktop session to open into
+   * (no DISPLAY), and the caller falls back to handing the URL to its client.
+   */
+  private openLoginPage(loginUrl: string): void {
+    const { command, args, shell } = browserOpenCommand(process.platform, loginUrl)
     try {
-      await execAsync(command)
-    } catch (err) {
-      log.error("failed to open login page in browser", {
-        command,
-        error: err instanceof Error ? err.message : String(err),
+      // detached + ignored stdio: a browser that outlives this call must not
+      // keep us waiting on its pipes.
+      const child = spawn(command, args, {
+        detached: true,
+        stdio: "ignore",
+        shell,
+        windowsHide: true,
       })
-      throw new Error("Failed to open login page", { cause: err })
+      child.on("error", (err) =>
+        log.warn("could not open login page in a browser; open the URL manually", {
+          command,
+          error: String(err),
+        }),
+      )
+      child.unref()
+    } catch (err) {
+      log.warn("could not open login page in a browser; open the URL manually", {
+        error: String(err),
+      })
     }
   }
 
@@ -527,6 +580,35 @@ export function parseJwt(token: string): JwtPayload {
     userName: typeof parsed.userName === "string" ? parsed.userName : "",
     exp: typeof parsed.exp === "number" ? parsed.exp : undefined,
     iat: typeof parsed.iat === "number" ? parsed.iat : undefined,
+    nationalCode: typeof parsed.nationalCode === "string" ? parsed.nationalCode : undefined,
+    isRealName: typeof parsed.isRealName === "boolean" ? parsed.isRealName : undefined,
+  }
+}
+
+/**
+ * Rebuild the signed-in identity from the stored jwtToken plus a fresh token
+ * pair. A headless refresh returns only tokens — never a profile — so a session
+ * restored at startup would otherwise report `logged_in` with a null user.
+ *
+ * Identity fields come straight out of the jwtToken payload; `language` is
+ * fixed the same way the interactive login fixes it. Returns null for an
+ * unparseable token rather than throwing, since this is only display data.
+ */
+export function userInfoFromJwt(jwtToken: string, tokens: RefreshResult): UserInfo | null {
+  try {
+    const payload = parseJwt(jwtToken)
+    return {
+      userId: payload.userId,
+      userName: payload.userName,
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      jwtToken,
+      countryCode: payload.nationalCode ?? "CN",
+      language: "zh_CN",
+      isRealName: payload.isRealName ?? false,
+    }
+  } catch {
+    return null
   }
 }
 
@@ -536,6 +618,7 @@ export function parseJwt(token: string): JwtPayload {
 
 export interface LoginServiceHandle {
   login(): Promise<LoginResult>
+  startLogin(opts?: { openBrowser?: boolean }): Promise<StartedLogin>
   refreshToken(jwtToken: string): Promise<RefreshResult | null>
   logout(): Promise<void>
   isLoggedIn(): Promise<boolean>

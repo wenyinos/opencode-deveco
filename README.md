@@ -133,16 +133,20 @@ journalctl --user -u opencode-deveco -f   # follow logs
 
 ### 4. Log in
 
-Open the proxy's login endpoint in any client — it opens your browser for
-Huawei OAuth and waits for the callback:
+Open `http://127.0.0.1:17128/v2/login` **in a browser** — it redirects straight
+to the Huawei OAuth page. It returns immediately (302) rather than holding the
+connection open, so from a script you get the URL back instead:
 
 ```bash
 curl http://127.0.0.1:17128/v2/login
-# → {"ok":true,"user":"...","expires_in_ms":1800000}
+# → {"login_url":"https://cn.devecostudio.huawei.com/console/DevEcoIDE/apply?port=10101&..."}
+curl http://127.0.0.1:17128/v2/status   # poll until {"logged_in":true,...}
 ```
 
-The first time you send a request, the proxy will also auto-trigger login if
-you haven't logged in yet.
+If you send a request while logged out, the proxy tries to open a browser for
+you and answers that request with `401` plus the same login URL — complete the
+sign-in, then retry. (Running as a background service with no desktop session,
+the automatic open can't work; use the URL from the `401` or from `/v2/login`.)
 
 ---
 
@@ -166,7 +170,7 @@ opencode run "say hi" -m deveco/GLM-5.1 # real request through the proxy
 | `POST /v2/chat/completions` | OpenAI-compatible — forwarded to DevEco |
 | `POST /anthropic/v1/messages` | Anthropic Messages API — auto-translated to/from OpenAI |
 | `GET  /v2/models` | DevEco model list (dynamic, static fallback; 1-hour cache TTL) |
-| `GET  /v2/login` | force a browser Huawei OAuth login |
+| `GET  /v2/login` | 302 → Huawei OAuth page (returns `{login_url}` to non-redirecting clients) |
 | `GET  /v2/status` | `{ logged_in, user, expires_in_ms }` |
 | `GET  /v2/logout` | clear stored credentials |
 
@@ -287,8 +291,10 @@ browser login.
 
 - **`opencode run ... -m deveco/glm-5` fails with connection refused** → the
   proxy isn't running. Start it (`node dist/proxy.js`).
-- **First request opens a browser** → that's expected; complete the Huawei
-  login. Subsequent requests within 30 min are headless.
+- **First request opens a browser and returns `401`** → that's expected when
+  logged out: the proxy starts the login in the background rather than making
+  you wait for it. Finish the Huawei login and retry; the next 30 minutes are
+  headless.
 - **`401` after a while** → access token expired and refresh failed (jwtToken
   no longer valid server-side). Hit `/v2/login` again.
 - **`opencode models` shows no deveco models** → check the `provider.deveco`

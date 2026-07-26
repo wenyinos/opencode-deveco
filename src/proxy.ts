@@ -25,7 +25,7 @@ import {
   DEVECO_BASE_URL,
   log,
 } from "./config.js"
-import { createLoginService, type UserInfo } from "./auth-login.js"
+import { createLoginService, userInfoFromJwt, type UserInfo } from "./auth-login.js"
 import { JsonTokenStore } from "./token-store.js"
 import { getDevecoProviderConfig } from "./models.js"
 import {
@@ -65,6 +65,9 @@ export class DevEcoProxy {
   private readonly tokenStore
   // Per-session Chat-Id mapping for the DevEco backend.
   private readonly sessionChatIdMap = new Map<string, string>()
+  // A browser login in flight, shared by all callers so concurrent requests
+  // never spin up competing callback servers.
+  private pendingLogin: Promise<string> | null = null
   // Track in-flight requests for graceful shutdown.
   private readonly activeRequests = new Set<http.ServerResponse>()
 
@@ -118,14 +121,53 @@ export class DevEcoProxy {
     // Try refreshing once on startup to validate the token still works.
     const refreshed = await this.loginService.refreshToken(jwtToken)
     if (refreshed) {
+      const userInfo = this.loginService.getUserInfo() ?? userInfoFromJwt(jwtToken, refreshed)
       this.session = {
-        userInfo: this.loginService.getUserInfo(),
+        userInfo,
         accessToken: refreshed.accessToken,
         refreshToken: refreshed.refreshToken,
         expiresAt: Date.now() + ACCESS_TOKEN_EXPIRES_MS,
       }
-      log.info("restored DevEco session from stored jwtToken")
+      log.info(`restored DevEco session from stored jwtToken (user: ${userInfo?.userName ?? "?"})`)
     }
+  }
+
+  /**
+   * Start a browser login, or join the one already running, and return the URL
+   * to visit. Resolves as soon as the URL exists — the actual sign-in completes
+   * in the background and installs the session when it lands.
+   */
+  private beginLogin(openBrowser: boolean): Promise<string> {
+    if (this.pendingLogin) return this.pendingLogin
+
+    const pending = (async () => {
+      const { url, result } = await this.loginService.startLogin({ openBrowser })
+      void result
+        .then((r) => {
+          if (r.success && r.userInfo) {
+            this.session = {
+              userInfo: r.userInfo,
+              accessToken: r.userInfo.accessToken,
+              refreshToken: r.userInfo.refreshToken,
+              expiresAt: Date.now() + ACCESS_TOKEN_EXPIRES_MS,
+            }
+            log.info(`DevEco login complete (user: ${r.userInfo.userName})`)
+          } else {
+            log.warn("DevEco login did not complete", { error: r.error })
+          }
+        })
+        .finally(() => {
+          this.pendingLogin = null
+        })
+      return url
+    })()
+
+    // A login we failed to even start must not wedge every later attempt.
+    pending.catch(() => {
+      this.pendingLogin = null
+    })
+    this.pendingLogin = pending
+    return pending
   }
 
   /** Ensure we have a non-expired access token; login or refresh as needed. */
@@ -141,7 +183,10 @@ export class DevEcoProxy {
         const refreshed = await this.loginService.refreshToken(jwtToken)
         if (refreshed) {
           this.session = {
-            userInfo: this.session?.userInfo ?? this.loginService.getUserInfo(),
+            userInfo:
+              this.session?.userInfo ??
+              this.loginService.getUserInfo() ??
+              userInfoFromJwt(jwtToken, refreshed),
             accessToken: refreshed.accessToken,
             refreshToken: refreshed.refreshToken,
             expiresAt: Date.now() + ACCESS_TOKEN_EXPIRES_MS,
@@ -152,19 +197,14 @@ export class DevEcoProxy {
       }
     }
 
-    // Fall back to interactive browser login.
+    // No usable credentials. Kick off a browser login in the background and
+    // fail *this* request immediately: waiting here would hang the client for
+    // the full 10-minute callback window, which is what "no reply" looks like.
     log.info("no valid DevEco token; starting browser login")
-    const result = await this.loginService.login()
-    if (!result.success || !result.userInfo) {
-      throw new Error(result.error || "DevEco login failed")
-    }
-    this.session = {
-      userInfo: result.userInfo,
-      accessToken: result.userInfo.accessToken,
-      refreshToken: result.userInfo.refreshToken,
-      expiresAt: Date.now() + ACCESS_TOKEN_EXPIRES_MS,
-    }
-    return this.session.accessToken
+    const url = await this.beginLogin(true)
+    throw new Error(
+      `DevEco login required. A browser should have opened — if it did not, visit: ${url}`,
+    )
   }
 
   // ---------------------------------------------------------------------------
@@ -188,21 +228,14 @@ export class DevEcoProxy {
       }
 
       if (p === "/login") {
-        const result = await this.loginService.login()
-        if (!result.success || !result.userInfo) {
-          return this.json(res, 401, { error: result.error || "login failed" })
-        }
-        this.session = {
-          userInfo: result.userInfo,
-          accessToken: result.userInfo.accessToken,
-          refreshToken: result.userInfo.refreshToken,
-          expiresAt: Date.now() + ACCESS_TOKEN_EXPIRES_MS,
-        }
-        return this.json(res, 200, {
-          ok: true,
-          user: result.userInfo.userName,
-          expires_in_ms: ACCESS_TOKEN_EXPIRES_MS,
-        })
+        // Whoever called this can already reach a browser — redirect them to
+        // Huawei instead of opening a second window, and don't hold the
+        // connection open for the callback. The JSON body means callers that
+        // don't follow redirects (curl without -L) still get the URL.
+        // Poll GET /v2/status to see when the sign-in lands.
+        const url = await this.beginLogin(false)
+        res.writeHead(302, { Location: url, "Content-Type": "application/json" })
+        return void res.end(JSON.stringify({ login_url: url }))
       }
 
       if (p === "/logout") {

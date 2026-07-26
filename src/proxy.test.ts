@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { parseJwt } from "./auth-login.js"
+import { browserOpenCommand, parseJwt, userInfoFromJwt } from "./auth-login.js"
 
 // Helper: build a minimal JWT (header.payload.signature) with a given payload.
 function makeJwt(payload: Record<string, unknown>): string {
@@ -34,6 +34,61 @@ describe("parseJwt", () => {
     const result = parseJwt(token)
     expect(result.userId).toBe("")
     expect(result.userName).toBe("")
+  })
+})
+
+describe("userInfoFromJwt", () => {
+  const tokens = { accessToken: "at", refreshToken: "rt" }
+
+  it("rebuilds the identity a headless refresh doesn't return", () => {
+    // Field names match a real DevEco jwtToken payload.
+    const jwt = makeJwt({ userId: "u1", userName: "Alice", nationalCode: "CN", isRealName: true })
+    const info = userInfoFromJwt(jwt, tokens)
+    expect(info).toMatchObject({
+      userId: "u1",
+      userName: "Alice",
+      countryCode: "CN",
+      isRealName: true,
+      accessToken: "at",
+      refreshToken: "rt",
+      jwtToken: jwt,
+    })
+  })
+
+  it("falls back without inventing a real-name status", () => {
+    const info = userInfoFromJwt(makeJwt({ userId: "u2", userName: "Bob" }), tokens)
+    expect(info?.countryCode).toBe("CN")
+    expect(info?.isRealName).toBe(false)
+  })
+
+  it("returns null for an unparseable token instead of throwing", () => {
+    expect(userInfoFromJwt("not-a-jwt", tokens)).toBeNull()
+  })
+})
+
+describe("browserOpenCommand", () => {
+  // A real login URL: the `&` separators are what break unquoted cmd.
+  const url =
+    "https://cn.devecostudio.huawei.com/console/DevEcoIDE/apply?port=10101&appid=1008&code=deadbeef"
+
+  it("keeps the URL quoted on Windows so cmd doesn't split it at &", () => {
+    const { command, args, shell } = browserOpenCommand("win32", url)
+    expect(shell).toBe(true)
+    expect(args).toEqual([])
+    expect(command).toBe(`start "" "${url}"`)
+  })
+
+  it("passes the URL as a single argv on macOS and Linux", () => {
+    expect(browserOpenCommand("darwin", url)).toEqual({
+      command: "open",
+      args: [url],
+      shell: false,
+    })
+    expect(browserOpenCommand("linux", url)).toEqual({
+      command: "xdg-open",
+      args: [url],
+      shell: false,
+    })
   })
 })
 

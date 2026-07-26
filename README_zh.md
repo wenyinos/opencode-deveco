@@ -119,14 +119,18 @@ journalctl --user -u opencode-deveco -f   # 实时看日志
 
 ### 4. 登录
 
-访问代理的登录端点即可 —— 会打开浏览器走华为 OAuth 并等待回调：
+**用浏览器**打开 `http://127.0.0.1:17128/v2/login`，会直接 302 跳到华为 OAuth 页面。
+该端点立即返回、不再挂住连接等回调，所以脚本调用拿到的是登录 URL：
 
 ```bash
 curl http://127.0.0.1:17128/v2/login
-# → {"ok":true,"user":"...","expires_in_ms":1800000}
+# → {"login_url":"https://cn.devecostudio.huawei.com/console/DevEcoIDE/apply?port=10101&..."}
+curl http://127.0.0.1:17128/v2/status   # 轮询直到 {"logged_in":true,...}
 ```
 
-如果尚未登录，第一次发请求时代理也会自动触发登录。
+未登录时发请求，代理会尝试替你打开浏览器，并给这次请求返回 `401` + 同一个登录 URL —
+登录完成后重试即可。（作为后台服务运行且没有桌面会话时，自动打开无法生效，
+用 `401` 或 `/v2/login` 返回的 URL 手动登录。）
 
 ---
 
@@ -150,7 +154,7 @@ opencode run "say hi" -m deveco/GLM-5.1   # 通过代理发真实请求
 | `POST /v2/chat/completions` | OpenAI 兼容 — 转发到 DevEco |
 | `POST /anthropic/v1/messages` | Anthropic Messages API — 自动转换为 OpenAI 格式 |
 | `GET  /v2/models` | DevEco 模型列表（动态获取，失败回退静态；1 小时缓存 TTL） |
-| `GET  /v2/login` | 强制触发浏览器华为 OAuth 登录 |
+| `GET  /v2/login` | 302 跳转到华为 OAuth 页面（不跟随重定向的客户端会拿到 `{login_url}`） |
 | `GET  /v2/status` | `{ logged_in, user, expires_in_ms }` |
 | `GET  /v2/logout` | 清除已存凭证 |
 
@@ -244,7 +248,7 @@ export ANTHROPIC_MODEL=GLM-5.1
 ## 故障排查
 
 - **`opencode run ... -m deveco/glm-5` 报连接被拒** → 代理没在跑。启动它（`node dist/proxy.js`）。
-- **第一次请求弹了浏览器** → 正常，完成华为登录即可；30 分钟内的后续请求都是无头的。
+- **第一次请求弹了浏览器并返回 `401`** → 未登录时的正常表现：代理在后台发起登录，而不是让你干等。完成华为登录后重试即可；之后 30 分钟内都是无头的。
 - **过一阵返回 `401`** → access token 过期且刷新失败（jwtToken 在服务端已失效）。再访问一次 `/v2/login`。
 - **`opencode models` 没有 deveco 模型** → 检查 `opencode.json` 里有没有 `provider.deveco` 条目（这是配置驱动，不是插件驱动）。
 - **非流式请求超时** → DevEco 的 `/no-stream` 接口可能较慢；优先用流式（opencode 默认就是）。

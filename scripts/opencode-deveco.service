@@ -12,7 +12,10 @@
 
 [Unit]
 Description=opencode-deveco proxy (DevEco Code model bridge for opencode)
-After=network-online.target
+# Order after the desktop session so the unit inherits DISPLAY/WAYLAND_DISPLAY
+# from the user manager; without them the automatic browser login can't open
+# anything (GET /v2/login still returns a URL you can open yourself).
+After=network-online.target graphical-session.target
 
 [Service]
 Type=simple
