@@ -167,26 +167,22 @@ the automatic open can't work; use the URL from the `401` or from `/v2/login`.)
 #### Logging in on a headless server
 
 Huawei sends the browser back to `http://127.0.0.1:<port>/callback`, and that
-callback listener binds loopback only — so the browser and the listener have to
-share a localhost. Give them one with an SSH tunnel:
+listener binds loopback only — so the browser and the listener need a shared
+localhost. An SSH tunnel gives them one:
 
 ```bash
-# from your desktop; keep this session open for the whole login
+# from your desktop; keep it open for the whole login
 ssh -L 10101:127.0.0.1:10101 -L 17128:127.0.0.1:17128 user@server
 ```
 
-Then open `http://127.0.0.1:17128/v2/login` in your **desktop** browser. It
-redirects to Huawei, you sign in, and the redirect back to
-`http://127.0.0.1:10101/callback` travels down the tunnel to the server, which
-stores the credentials. Check `curl http://127.0.0.1:17128/v2/status`.
+Then open `http://127.0.0.1:17128/v2/login` in your **desktop** browser and sign
+in; the callback travels down the tunnel and the credentials land on the server.
 
-> The callback port is not always 10101 — the proxy falls back to 34567-34570
-> when it is taken, and the port it actually used is in the `port=` parameter of
-> the login URL. Read that first and forward the port it names.
+> The callback port is not always 10101 — it falls back to 34567-34570 when
+> taken. Forward whichever port the login URL's `port=` names.
 
-Forwarding 17128 as well is what lets you drive the proxy from your desktop at
-all: it binds loopback too, and it has no authentication of its own, so an SSH
-tunnel is the intended way to reach it rather than exposing the port.
+Both ports bind loopback and the proxy has no authentication of its own, so a
+tunnel is the intended way in — don't expose the port instead.
 
 ---
 
@@ -233,38 +229,25 @@ export ANTHROPIC_API_KEY=opencode-oauth-dummy-key
 export ANTHROPIC_MODEL=GLM-5.1
 ```
 
-Then start Claude Code normally — it will send Anthropic Messages API requests
-to the proxy, which transforms them into OpenAI Chat Completions for DevEco and
-transforms the responses back.
-
-Supports: streaming, tool use (function calling), thinking/reasoning blocks, and
-image content.
+Then start Claude Code normally. Streaming, tool use, thinking blocks and image
+content are all supported.
 
 ---
 
 ## Logs & observability
 
-The proxy logs every request to **stdout** (info) and **stderr** (warn/error).
-How you see them depends on how you start the proxy — **identical on
-Windows/Linux/mac**:
-
-| Run mode | Command | Where logs appear |
-|---|---|---|
-| **Foreground (best for debugging)** | `node dist/proxy.js` | printed live in the terminal you ran it in |
-| Background → file | see "Start the proxy" above (redirect `> proxy.log 2>&1`) | in `proxy.log`; follow with `tail -f proxy.log` (Linux/mac) or `Get-Content -Wait proxy.log` (PowerShell) |
-
-Each request produces two lines — the request and the response:
+The proxy logs to stdout (info) and stderr (warn/error) — the terminal when run
+in the foreground, or wherever you redirected it. Each request produces a pair of
+lines:
 
 ```
 [2026-06-14T16:53:24.999Z] [INFO] -> POST stream model=GLM-5.1
 [2026-06-14T16:53:27.150Z] [INFO] <- 200 2151ms in=2677 out=7 model=GLM-5.1 (backend: GLM5_1_W4A8-1.0.0)
 ```
 
-Fields: direction (`->` request / `<-` response), HTTP status, duration, token
-usage (`in=` prompt, `out=` completion), requested model, and the DevEco backend
-model that actually served it. Session lifecycle events are also logged
-(`restored DevEco session`, `refreshed DevEco access token`,
-`upstream 401 → refreshed token`, `no valid DevEco token; starting browser login`).
+`in=`/`out=` are prompt and completion tokens, and the trailing `backend:` is the
+DevEco model that actually served the request. Session events (token refresh,
+`401` retries, login) are logged too.
 
 Verbosity via env: `DEVECO_LOG_LEVEL=debug|info|warn|error` (default `info`).
 
@@ -316,35 +299,24 @@ browser login.
 
 ## Recent improvements
 
-- **Idle-based upstream timeout** — a turn is cut off only after DevEco has been
-  *silent* for 120s, not after a fixed total duration. The old 60s wall-clock cap
-  killed healthy long conversations once their history grew large enough, and did
-  it by truncating the SSE stream with no terminating event, so the client only
-  saw a mangled response. Interrupted streams now close their content blocks and
-  emit a real Anthropic `error` event explaining what happened.
-- **Forced tool choice works** — `tool_choice: {"type":"tool","name":"X"}` used to
-  fail the whole request (DevEco types `tool_choice` as an enum and rejects
-  OpenAI's object form). It is now sent as `"required"` with the tool list
-  narrowed to that one tool, which is equivalent from the model's point of view.
-- **`max_tokens` is honoured** — it was silently dropped on the Anthropic path,
-  so every reply ran to the backend's own limit.
-- **Stable Chat-Id per conversation** — DevEco keys server-side turn state on
-  (`Session-Id`, `Chat-Id`); the proxy used to mint a fresh id per request, making
-  every turn look like a brand-new chat. It now derives a stable key per
-  conversation and releases the queue slot via `exitSessionQueue` when a turn ends.
-- **Non-blocking login** — `GET /v2/login` returns a redirect immediately instead
-  of holding the connection open for the 10-minute callback window; requests made
+Long Claude Code sessions used to break after a few rounds; the fixes for that
+and for login are the recent bulk of the work. `git log` has the reasoning
+behind each.
+
+- **Idle-based upstream timeout** — a turn is cut only after DevEco goes *silent*
+  for 120s, instead of a 60s cap on its total length that killed long
+  conversations. Interrupted streams now emit a real Anthropic `error` event
+  rather than truncating.
+- **Forced tool choice works** — `tool_choice: {"type":"tool"}` used to fail the
+  whole request; DevEco only accepts the enum form.
+- **`max_tokens` is honoured** — it was silently dropped on the Anthropic path.
+- **Stable Chat-Id per conversation**, and the queue slot is released via
+  `exitSessionQueue` when a turn ends.
+- **Non-blocking login** — `/v2/login` redirects immediately, and requests made
   while logged out fail fast with the login URL instead of hanging.
-- **Graceful shutdown** — the proxy drains in-flight requests on SIGTERM/SIGINT
-  before exiting (systemd service stops cleanly).
-- **Login/token endpoints** still use a plain 20s timeout.
-- **Model list cache TTL** — the dynamic model list refreshes automatically every
-  hour (previously cached forever until restart).
-- **Unified HTTP stack** — the custom `HttpClient` has been removed; all HTTP
-  calls now use Node's built-in `fetch`.
-- **ESLint + tests** — `npm run lint` and `npm run test` are now available.
-- **`/v2` prefix optional** — all proxy endpoints work with or without the `/v2`
-  prefix.
+- **Graceful shutdown**, **hourly model-list refresh**, **`fetch` everywhere**
+  (the custom `HttpClient` is gone), **lint + tests**, and an optional `/v2`
+  prefix on every endpoint.
 
 ---
 

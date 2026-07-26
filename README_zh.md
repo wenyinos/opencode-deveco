@@ -149,23 +149,22 @@ curl http://127.0.0.1:17128/v2/status   # 轮询直到 {"logged_in":true,...}
 
 #### 在无头服务器上登录
 
-华为会把浏览器重定向回 `http://127.0.0.1:<端口>/callback`，而这个回调监听只绑定
-loopback —— 也就是说浏览器和回调监听必须共享同一个 localhost。用 SSH 隧道把它们接到一起：
+华为会把浏览器重定向回 `http://127.0.0.1:<端口>/callback`，而这个监听只绑 loopback ——
+浏览器和它必须共享同一个 localhost。用 SSH 隧道把两者接起来：
 
 ```bash
-# 在你的桌面机器上执行，整个登录过程保持这个会话开着
+# 在桌面机器上执行，整个登录过程保持会话开着
 ssh -L 10101:127.0.0.1:10101 -L 17128:127.0.0.1:17128 user@server
 ```
 
-然后用**桌面机器的浏览器**打开 `http://127.0.0.1:17128/v2/login`。它会跳转到华为页面，
-你正常登录，随后回跳的 `http://127.0.0.1:10101/callback` 经隧道送达服务器，凭证就落在
-服务器上。用 `curl http://127.0.0.1:17128/v2/status` 确认。
+然后用**桌面机器的浏览器**打开 `http://127.0.0.1:17128/v2/login` 完成登录，回调会经隧道
+送达服务器，凭证落在服务器上。
 
-> 回调端口不一定是 10101 —— 被占用时代理会依次退到 34567-34570，实际用的那个写在登录
-> URL 的 `port=` 参数里。先看一眼 URL，按它给出的端口转发。
+> 回调端口不一定是 10101 —— 被占用时会依次退到 34567-34570。按登录 URL 里 `port=`
+> 给出的端口转发。
 
-顺带转发 17128 是为了让你能从桌面机器操作代理：它同样只绑 loopback，而且自身不做任何
-鉴权，所以走 SSH 隧道访问是有意为之的方式，不要直接把端口暴露出去。
+两个端口都只绑 loopback，代理自身也不做任何鉴权，所以走隧道是有意为之的访问方式，不要
+直接把端口暴露出去。
 
 ---
 
@@ -209,29 +208,20 @@ export ANTHROPIC_API_KEY=opencode-oauth-dummy-key
 export ANTHROPIC_MODEL=GLM-5.1
 ```
 
-然后正常启动 Claude Code 即可 —— 它会将 Anthropic Messages API 请求发送到代理，代理自动转换为 OpenAI 格式转发给 DevEco，再将响应转换回 Anthropic 格式。
-
-支持：流式传输、工具调用（function calling）、thinking/reasoning 块、图片内容。
+然后正常启动 Claude Code 即可。流式传输、工具调用、thinking 块和图片内容都支持。
 
 ---
 
 ## 日志与可观测性
 
-代理把每次请求打到 **stdout**（info）和 **stderr**（warn/error）。怎么看日志取决于启动方式 —— **Windows/Linux/mac 完全一致**：
-
-| 运行方式 | 命令 | 日志位置 |
-|---|---|---|
-| **前台运行（调试首选）** | `node dist/proxy.js` | 实时打印在当前终端 |
-| 后台 → 文件 | 见上方"启动代理"（重定向 `> proxy.log 2>&1`） | 写到 `proxy.log`；用 `tail -f proxy.log`（Linux/mac）或 `Get-Content -Wait proxy.log`（PowerShell）查看 |
-
-每个请求产生两行日志 —— 请求行和响应行：
+代理把日志打到 stdout（info）和 stderr（warn/error）—— 前台运行就在终端，后台就在你重定向的文件里。每个请求产生一对日志：
 
 ```
 [2026-06-14T16:53:24.999Z] [INFO] -> POST stream model=GLM-5.1
 [2026-06-14T16:53:27.150Z] [INFO] <- 200 2151ms in=2677 out=7 model=GLM-5.1 (backend: GLM5_1_W4A8-1.0.0)
 ```
 
-字段含义：方向（`->` 请求 / `<-` 响应）、HTTP 状态码、耗时、token 用量（`in=` 输入、`out=` 输出）、请求的模型名、DevEco 后端实际服务的模型。会话生命周期事件也会记录（`restored DevEco session`、`refreshed DevEco access token`、`upstream 401 → refreshed token`、`no valid DevEco token; starting browser login`）。
+`in=`/`out=` 是输入与输出 token 数，末尾 `backend:` 是 DevEco 实际调度的模型。token 刷新、`401` 重试、登录等会话事件也会记录。
 
 通过环境变量控制详细程度：`DEVECO_LOG_LEVEL=debug|info|warn|error`（默认 `info`）。
 
@@ -272,17 +262,14 @@ export ANTHROPIC_MODEL=GLM-5.1
 
 ## 近期改进
 
-- **上游超时改为「空闲超时」** — 只有当 DevEco **连续沉默** 120 秒才中断，不再限制单轮总时长。原来 60 秒的总时长上限会在对话历史长到一定程度后误杀正常会话，而且是直接截断 SSE、不发任何结束事件，客户端只看到一段残缺响应。现在流被中断时会关闭已开的内容块，并补发一个真正的 Anthropic `error` 事件说明原因。
-- **强制指定工具可用了** — `tool_choice: {"type":"tool","name":"X"}` 原本会让整个请求失败（DevEco 把 `tool_choice` 定义成枚举，不接受 OpenAI 的对象形式）。现在改为发送 `"required"` 并把工具列表收窄到那一个工具，对模型来说语义等价。
-- **`max_tokens` 会被遵守** — Anthropic 路径上原本静默丢弃了这个字段，导致每次回复都跑到后端自己的上限。
-- **Chat-Id 按对话保持稳定** — DevEco 用 (`Session-Id`, `Chat-Id`) 维护服务端轮次状态；代理原本每个请求都新生成一个 id，使每一轮看起来都像全新会话。现在按对话推导稳定的键，并在每轮结束时通过 `exitSessionQueue` 释放队列槽位。
-- **登录不再阻塞** — `GET /v2/login` 立即返回重定向，不再占着连接等满 10 分钟回调窗口；未登录时发请求会快速失败并附上登录 URL，而不是一直挂着。
-- **优雅关停** — 代理收到 SIGTERM/SIGINT 后会等待正在处理的请求完成再退出，systemd 服务停止时不再丢失请求。
-- **login/token 端点** 仍是普通的 20 秒超时。
-- **模型列表缓存 TTL** — 动态模型列表每小时自动刷新（此前永不过期，需重启才能获取新模型）。
-- **统一 HTTP 栈** — 删除自定义 `HttpClient`，所有 HTTP 调用统一使用 Node 内置 `fetch`。
-- **ESLint + 测试** — 新增 `npm run lint` 和 `npm run test`。
-- **`/v2` 前缀可选** — 所有代理端点均可省略 `/v2` 前缀。
+Claude Code 长会话跑几轮就报错的问题，以及登录相关的修复，是近期的主要工作。每一项的来龙去脉见 `git log`。
+
+- **上游超时改为「空闲超时」** — 只有当 DevEco **连续沉默** 120 秒才中断，取代原来那个会误杀长对话的 60 秒总时长上限。流被中断时补发真正的 Anthropic `error` 事件，不再直接截断。
+- **强制指定工具可用了** — `tool_choice: {"type":"tool"}` 原本会让整个请求失败，DevEco 只接受枚举形式。
+- **`max_tokens` 会被遵守** — Anthropic 路径上原本静默丢弃了这个字段。
+- **Chat-Id 按对话保持稳定**，并在每轮结束时通过 `exitSessionQueue` 释放队列槽位。
+- **登录不再阻塞** — `/v2/login` 立即返回重定向；未登录时发请求会快速失败并附上登录 URL，而不是一直挂着。
+- **优雅关停**、**模型列表每小时刷新**、**HTTP 统一走 `fetch`**（自定义 `HttpClient` 已删除）、**lint 与测试**，以及所有端点的 `/v2` 前缀均可省略。
 
 ---
 
