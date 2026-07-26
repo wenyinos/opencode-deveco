@@ -164,6 +164,30 @@ you and answers that request with `401` plus the same login URL — complete the
 sign-in, then retry. (Running as a background service with no desktop session,
 the automatic open can't work; use the URL from the `401` or from `/v2/login`.)
 
+#### Logging in on a headless server
+
+Huawei sends the browser back to `http://127.0.0.1:<port>/callback`, and that
+callback listener binds loopback only — so the browser and the listener have to
+share a localhost. Give them one with an SSH tunnel:
+
+```bash
+# from your desktop; keep this session open for the whole login
+ssh -L 10101:127.0.0.1:10101 -L 17128:127.0.0.1:17128 user@server
+```
+
+Then open `http://127.0.0.1:17128/v2/login` in your **desktop** browser. It
+redirects to Huawei, you sign in, and the redirect back to
+`http://127.0.0.1:10101/callback` travels down the tunnel to the server, which
+stores the credentials. Check `curl http://127.0.0.1:17128/v2/status`.
+
+> The callback port is not always 10101 — the proxy falls back to 34567-34570
+> when it is taken, and the port it actually used is in the `port=` parameter of
+> the login URL. Read that first and forward the port it names.
+
+Forwarding 17128 as well is what lets you drive the proxy from your desktop at
+all: it binds loopback too, and it has no authentication of its own, so an SSH
+tunnel is the intended way to reach it rather than exposing the port.
+
 ---
 
 ## Verify
