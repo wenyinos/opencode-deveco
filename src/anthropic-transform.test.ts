@@ -2,8 +2,22 @@ import { describe, it, expect } from "vitest"
 import {
   anthropicToOpenaiChat,
   openaiChatToAnthropic,
+  openaiChatStreamToAnthropic,
   type AnthropicRequest,
 } from "./anthropic-transform.js"
+
+/** Collect a transformed SSE stream into one string. */
+async function drain(stream: ReadableStream<Uint8Array>): Promise<string> {
+  const reader = stream.getReader()
+  const decoder = new TextDecoder()
+  let out = ""
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    out += decoder.decode(value, { stream: true })
+  }
+  return out
+}
 
 describe("anthropicToOpenaiChat", () => {
   const baseReq: AnthropicRequest = {
@@ -72,8 +86,27 @@ describe("anthropicToOpenaiChat", () => {
     expect(anthropicToOpenaiChat({ ...baseReq, tool_choice: { type: "auto" } }).tool_choice).toBe("auto")
     expect(anthropicToOpenaiChat({ ...baseReq, tool_choice: { type: "any" } }).tool_choice).toBe("required")
     expect(anthropicToOpenaiChat({ ...baseReq, tool_choice: { type: "none" } }).tool_choice).toBe("none")
-    expect(anthropicToOpenaiChat({ ...baseReq, tool_choice: { type: "tool", name: "bash" } }).tool_choice)
-      .toEqual({ type: "function", function: { name: "bash" } })
+  })
+
+  it("emulates a forced tool without the object form DevEco rejects", () => {
+    // DevEco types tool_choice as an enum, so {type:"function",...} fails the
+    // whole request with a ToolChoiceMode deserialisation error. Requiring a
+    // call while offering only the named tool is the same thing to the model.
+    const result = anthropicToOpenaiChat({
+      ...baseReq,
+      tool_choice: { type: "tool", name: "bash" },
+      tools: [
+        { name: "bash", description: "run", input_schema: {} },
+        { name: "read", description: "read", input_schema: {} },
+      ],
+    })
+    expect(result.tool_choice).toBe("required")
+    expect(result.tools).toHaveLength(1)
+    expect(result.tools![0].function.name).toBe("bash")
+  })
+
+  it("forwards max_tokens", () => {
+    expect(anthropicToOpenaiChat({ ...baseReq, max_tokens: 64 }).max_tokens).toBe(64)
   })
 
   it("converts thinking to reasoning_effort", () => {
@@ -206,5 +239,53 @@ describe("openaiChatToAnthropic", () => {
     const result = openaiChatToAnthropic(response, "m")
     expect(result.usage.input_tokens).toBe(70)
     expect(result.usage.cache_read_input_tokens).toBe(30)
+  })
+})
+
+describe("openaiChatStreamToAnthropic", () => {
+  const chunk = (delta: unknown) =>
+    `data: ${JSON.stringify({ id: "c1", model: "m", choices: [{ delta, index: 0 }] })}\n\n`
+
+  /** A stream that emits some chunks and then fails, like an aborted upstream. */
+  function dyingStream(fail: Error): ReadableStream<Uint8Array> {
+    const encoder = new TextEncoder()
+    let sent = false
+    return new ReadableStream({
+      pull(controller) {
+        if (!sent) {
+          sent = true
+          controller.enqueue(encoder.encode(chunk({ content: "部分" })))
+          return
+        }
+        controller.error(fail)
+      },
+    })
+  }
+
+  it("reports why a stream died instead of just truncating", async () => {
+    const out = await drain(
+      openaiChatStreamToAnthropic(dyingStream(new Error("upstream silent for 120000ms")), "m"),
+    )
+    // The text that did arrive is kept, its block is closed, and the client is
+    // told the real reason rather than being left on a dangling stream.
+    expect(out).toContain("部分")
+    expect(out).toContain("content_block_stop")
+    expect(out).toContain("event: error")
+    expect(out).toContain("upstream silent for 120000ms")
+  })
+
+  it("pings the idle watchdog on every upstream chunk", async () => {
+    const encoder = new TextEncoder()
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(chunk({ content: "a" })))
+        controller.enqueue(encoder.encode(": keep-alive\n\n"))
+        controller.close()
+      },
+    })
+    let pings = 0
+    await drain(openaiChatStreamToAnthropic(body, "m", () => pings++))
+    // Two raw chunks — including the keep-alive that produces no client event.
+    expect(pings).toBe(2)
   })
 })

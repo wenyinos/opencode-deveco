@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest"
 import { browserOpenCommand, parseJwt, userInfoFromJwt } from "./auth-login.js"
+import { conversationKey, idleBudget } from "./proxy.js"
 
 // Helper: build a minimal JWT (header.payload.signature) with a given payload.
 function makeJwt(payload: Record<string, unknown>): string {
@@ -109,5 +110,54 @@ describe("/v2 path stripping", () => {
   it("maps bare /v2 to /", () => {
     expect(strip("/v2")).toBe("/")
     expect(strip("/v2/")).toBe("/")
+  })
+})
+
+describe("idleBudget", () => {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+  it("aborts once the upstream goes quiet", async () => {
+    const b = idleBudget(120)
+    expect(b.signal.aborted).toBe(false)
+    await sleep(200)
+    expect(b.signal.aborted).toBe(true)
+    b.done()
+  })
+
+  it("lets a slow but live stream run past the idle window", async () => {
+    const b = idleBudget(120)
+    // Five 80ms gaps: 400ms total, well beyond the window, never silent for it.
+    for (let i = 0; i < 5; i++) {
+      await sleep(80)
+      b.touch()
+    }
+    expect(b.signal.aborted).toBe(false)
+    b.done()
+  })
+
+  it("stops the clock once the turn is done", async () => {
+    const b = idleBudget(100)
+    b.done()
+    await sleep(200)
+    expect(b.signal.aborted).toBe(false)
+  })
+})
+
+describe("conversationKey", () => {
+  const first = { role: "user", content: "开始" }
+
+  it("stays put as the conversation grows", () => {
+    const round1 = conversationKey({ system: "sys", messages: [first] })
+    const round2 = conversationKey({
+      system: "sys",
+      messages: [first, { role: "assistant", content: "好" }, { role: "user", content: "继续" }],
+    })
+    expect(round2).toBe(round1)
+  })
+
+  it("separates different conversations", () => {
+    expect(conversationKey({ system: "sys", messages: [first] })).not.toBe(
+      conversationKey({ system: "sys", messages: [{ role: "user", content: "另一个话题" }] }),
+    )
   })
 })

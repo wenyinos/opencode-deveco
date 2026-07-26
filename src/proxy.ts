@@ -23,6 +23,8 @@ import {
   DEVECO_API_BASE,
   DEVECO_DEFAULTS,
   DEVECO_BASE_URL,
+  DEVECO_EXIT_QUEUE_URL,
+  UPSTREAM_IDLE_TIMEOUT_MS,
   log,
 } from "./config.js"
 import { createLoginService, userInfoFromJwt, type UserInfo } from "./auth-login.js"
@@ -56,6 +58,51 @@ interface UsageInfo {
   completion_tokens_details?: { reasoning_tokens?: number }
 }
 
+/**
+ * An idle budget for one upstream call: aborts only after the backend has been
+ * silent for `idleMs`. `touch()` restarts the clock on every byte received;
+ * `done()` disarms it once the turn is over.
+ */
+export function idleBudget(idleMs: number): {
+  signal: AbortSignal
+  touch: () => void
+  done: () => void
+} {
+  const controller = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const done = () => {
+    if (timer) clearTimeout(timer)
+    timer = null
+  }
+  const touch = () => {
+    done()
+    timer = setTimeout(
+      () => controller.abort(new Error(`upstream silent for ${idleMs}ms`)),
+      idleMs,
+    )
+  }
+  touch()
+  return { signal: controller.signal, touch, done }
+}
+
+/**
+ * A stable per-conversation key.
+ *
+ * Neither the Anthropic nor the OpenAI wire format carries a session id, but a
+ * conversation's opening turn never changes as it grows — so hashing the system
+ * prompt plus the first message identifies the conversation across rounds, which
+ * is what DevEco's Chat-Id is expected to track.
+ */
+export function conversationKey(body: unknown): string {
+  try {
+    const b = body as { system?: unknown; messages?: unknown[] }
+    const head = JSON.stringify([b.system ?? "", b.messages?.[0] ?? ""])
+    return crypto.createHash("sha256").update(head).digest("hex").slice(0, 32)
+  } catch {
+    return crypto.randomUUID().replace(/-/g, "")
+  }
+}
+
 export class DevEcoProxy {
   private readonly port: number
   private readonly hostname: string
@@ -63,7 +110,7 @@ export class DevEcoProxy {
   private session: Session | null = null
   private readonly loginService
   private readonly tokenStore
-  // Per-session Chat-Id mapping for the DevEco backend.
+  // Conversation key -> the DevEco Chat-Id that conversation is pinned to.
   private readonly sessionChatIdMap = new Map<string, string>()
   // A browser login in flight, shared by all callers so concurrent requests
   // never spin up competing callback servers.
@@ -103,6 +150,52 @@ export class DevEcoProxy {
 
   getPort(): number {
     return this.port
+  }
+
+  /**
+   * The Chat-Id this conversation is pinned to, minted on first sight.
+   *
+   * DevEco keys server-side turn state on (Session-Id, Chat-Id); a fresh id per
+   * request makes every turn look like a brand-new chat.
+   */
+  private chatIdFor(key: string): string {
+    let chatId = this.sessionChatIdMap.get(key)
+    if (!chatId) {
+      // Bound the map: these are cheap, and a long-lived proxy would otherwise
+      // accumulate one entry per conversation forever.
+      if (this.sessionChatIdMap.size >= 500) {
+        this.sessionChatIdMap.delete(this.sessionChatIdMap.keys().next().value!)
+      }
+      chatId = crypto.randomUUID().replace(/-/g, "")
+      this.sessionChatIdMap.set(key, chatId)
+    }
+    return chatId
+  }
+
+  /**
+   * Release the queue slot this turn held. Fire-and-forget, exactly as upstream
+   * treats it: a failure here must never surface to the client, whose answer
+   * has already been delivered.
+   */
+  private exitQueue(key: string, chatId: string, model: string, token: string): void {
+    const url = `${DEVECO_EXIT_QUEUE_URL}?modelId=${encodeURIComponent(model)}`
+    void fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Session-Id": key,
+        "Chat-Id": chatId,
+        Authorization: `Bearer ${token}`,
+      },
+      signal: AbortSignal.timeout(5_000),
+    })
+      .then((r) => {
+        // Silent when it works; a slot we failed to release is worth seeing,
+        // since the symptom (errors after many turns) is otherwise baffling.
+        if (r.ok) log.debug(`exitSessionQueue -> ${r.status}`)
+        else log.warn(`exitSessionQueue -> HTTP ${r.status}`)
+      })
+      .catch((err) => log.warn("exitSessionQueue failed", { error: String(err) }))
   }
 
   /** Track a response so stop() can wait for it to finish. */
@@ -279,12 +372,14 @@ export class DevEcoProxy {
     const bodyBuffer = await this.readBody(req)
     let stream = true
     let model = "?"
+    let convKey = crypto.randomUUID().replace(/-/g, "")
     try {
       const parsed = JSON.parse(bodyBuffer.toString("utf8"))
       if (parsed && typeof parsed === "object") {
         const obj = parsed as Record<string, unknown>
         if (obj.stream === false) stream = false
         if (typeof obj.model === "string") model = obj.model
+        convKey = conversationKey(parsed)
       }
     } catch {
       /* forward as-is if not JSON */
@@ -309,11 +404,13 @@ export class DevEcoProxy {
     const upstreamUrl = `${DEVECO_ORIGIN}${upstreamPath}`
 
     // DevEco-required headers.
+    const chatId = this.chatIdFor(convKey)
     const headers: Record<string, string> = {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
       lang: "en",
-      "Chat-Id": crypto.randomUUID().replace(/-/g, ""),
+      "Chat-Id": chatId,
+      "Session-Id": convKey,
       "User-Agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
       "accept-language": "zh-CN",
@@ -326,13 +423,16 @@ export class DevEcoProxy {
     // Uint8Array directly, but node's fetch accepts raw bytes at runtime.
     const bodyInit = bodyBuffer as unknown as BodyInit
 
+    const budget = idleBudget(UPSTREAM_IDLE_TIMEOUT_MS)
+
     // Forward to DevEco and stream/passthrough the response back.
     const upstream = await fetch(upstreamUrl, {
       method: "POST",
       headers,
       body: bodyInit,
-      signal: AbortSignal.timeout(60_000),
+      signal: budget.signal,
     }).catch((err) => {
+      budget.done()
       throw new Error(`upstream fetch failed: ${String(err)}`)
     })
 
@@ -348,17 +448,23 @@ export class DevEcoProxy {
           this.session.expiresAt = Date.now() + ACCESS_TOKEN_EXPIRES_MS
           headers.Authorization = `Bearer ${refreshed.accessToken}`
           log.warn("upstream 401 → refreshed token, retrying once")
+          budget.touch()
           responseToPipe = await fetch(upstreamUrl, {
             method: "POST",
             headers,
             body: bodyInit,
-            signal: AbortSignal.timeout(60_000),
+            signal: budget.signal,
           })
         }
       }
     }
 
-    return this.pipeResponse(responseToPipe, res, stream, ctx)
+    try {
+      await this.pipeResponse(responseToPipe, res, stream, ctx, budget.touch)
+    } finally {
+      budget.done()
+      this.exitQueue(convKey, chatId, model, accessToken)
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -406,11 +512,14 @@ export class DevEcoProxy {
       : `${DEVECO_API_PREFIX}/no-stream/chat/completions`
     const upstreamUrl = `${DEVECO_ORIGIN}${upstreamPath}`
 
+    const convKey = conversationKey(anthropicReq)
+    const chatId = this.chatIdFor(convKey)
     const headers: Record<string, string> = {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
       lang: "en",
-      "Chat-Id": crypto.randomUUID().replace(/-/g, ""),
+      "Chat-Id": chatId,
+      "Session-Id": convKey,
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
       "accept-language": "zh-CN",
     }
@@ -418,15 +527,22 @@ export class DevEcoProxy {
     const t0 = Date.now()
     log.info(`-> POST anthropic/${isStream ? "stream" : "no-stream"} model=${model}`)
 
+    const budget = idleBudget(UPSTREAM_IDLE_TIMEOUT_MS)
+    const finishTurn = () => {
+      budget.done()
+      this.exitQueue(convKey, chatId, model, accessToken)
+    }
+
     let upstream: Response
     try {
       upstream = await fetch(upstreamUrl, {
         method: "POST",
         headers,
         body: openaiBody,
-        signal: AbortSignal.timeout(60_000),
+        signal: budget.signal,
       })
     } catch (err) {
+      finishTurn()
       const msg = err instanceof Error ? err.message : String(err)
       log.error("anthropic upstream fetch failed", { error: msg })
       res.writeHead(502, { "Content-Type": "application/json" })
@@ -447,17 +563,19 @@ export class DevEcoProxy {
           this.session.expiresAt = Date.now() + ACCESS_TOKEN_EXPIRES_MS
           headers.Authorization = `Bearer ${refreshed.accessToken}`
           log.warn("anthropic upstream 401 → refreshed token, retrying once")
+          budget.touch()
           upstream = await fetch(upstreamUrl, {
             method: "POST",
             headers,
             body: openaiBody,
-            signal: AbortSignal.timeout(60_000),
+            signal: budget.signal,
           })
         }
       }
     }
 
     if (!upstream.ok) {
+      finishTurn()
       const errText = await upstream.text().catch(() => "")
       log.error(`anthropic upstream error: HTTP ${upstream.status}`, { body: errText.slice(0, 200) })
       res.writeHead(upstream.status, { "Content-Type": "application/json" })
@@ -469,6 +587,7 @@ export class DevEcoProxy {
 
     if (isStream) {
       if (!upstream.body) {
+        finishTurn()
         res.writeHead(502, { "Content-Type": "application/json" })
         return void res.end(JSON.stringify({
           type: "error",
@@ -476,7 +595,7 @@ export class DevEcoProxy {
         }))
       }
 
-      const anthropicStream = openaiChatStreamToAnthropic(upstream.body, model)
+      const anthropicStream = openaiChatStreamToAnthropic(upstream.body, model, budget.touch)
       res.writeHead(200, {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
@@ -494,14 +613,17 @@ export class DevEcoProxy {
         const dur = Date.now() - t0
         log.info(`<- 200 ${dur}ms anthropic/stream model=${model}`)
       }
-      void pump().catch((err) => {
-        log.error("anthropic stream pipe error", { error: String(err) })
-        res.end()
-      })
+      void pump()
+        .catch((err) => {
+          log.error("anthropic stream pipe error", { error: String(err) })
+          res.end()
+        })
+        .finally(finishTurn)
       return
     }
 
     // Non-streaming
+    finishTurn()
     const openaiResponse = await upstream.json()
     const anthropicResponse = openaiChatToAnthropic(openaiResponse, model)
     const dur = Date.now() - t0
@@ -518,6 +640,7 @@ export class DevEcoProxy {
     res: http.ServerResponse,
     stream: boolean,
     ctx?: { model: string; stream: boolean; upstreamUrl: string; t0: number },
+    touch?: () => void,
   ): Promise<void> {
     const respHeaders: Record<string, string> = {
       "Content-Type": upstream.headers.get("content-type") || "application/json",
@@ -533,14 +656,23 @@ export class DevEcoProxy {
 
     if (upstream.body) {
       const reader = upstream.body.getReader()
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        res.write(value)
-        if (ctx) {
-          tailChunks.push(Buffer.from(value))
-          if (tailChunks.length > TAIL_KEEP) tailChunks.shift()
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          touch?.()
+          res.write(value)
+          if (ctx) {
+            tailChunks.push(Buffer.from(value))
+            if (tailChunks.length > TAIL_KEEP) tailChunks.shift()
+          }
         }
+      } catch (err) {
+        // The response head is already on the wire, so this can't become an
+        // error status — swallowing it here also keeps the throw from reaching
+        // handle()'s catch, which would try to write headers a second time and
+        // take the whole process down with an unhandled rejection.
+        log.error("upstream stream ended early", { error: String(err) })
       }
     }
     res.end()
@@ -598,6 +730,12 @@ export class DevEcoProxy {
   }
 
   private json(res: http.ServerResponse, status: number, body: unknown): void {
+    // Once the head is out (a stream that failed midway) writing it again
+    // throws ERR_HTTP_HEADERS_SENT; all we can still do is close the response.
+    if (res.headersSent) {
+      res.end()
+      return
+    }
     res.writeHead(status, { "Content-Type": "application/json" })
     res.end(JSON.stringify(body))
   }

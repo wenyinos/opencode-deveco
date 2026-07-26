@@ -64,7 +64,10 @@ Claude Code      → POST /anthropic/v1/messages → anthropic-transform 转成 
 - 非流式请求必须用 `/no-stream/chat/completions` 路径(靠 URL 区分流式与否,不靠 body 的 `stream` 字段)
 - 必需 headers:`Authorization: Bearer`、`Chat-Id`(32 位去连字符 UUID)、`lang`、`User-Agent`、`accept-language`
 - 模型 id 是 `GLM-5.1`(不是 `glm-5`)
-- 上游超时:聊天 60s,登录/token 接口 20s
+- **`tool_choice` 是枚举**,只收 `"auto"|"none"|"required"`。发 OpenAI 的对象形式 `{type:"function",...}` 会让整个请求 400(`ToolChoiceMode` 反序列化失败)。"指定某个工具"靠 `"required"` + 收窄 `tools` 来模拟
+- **服务端按 (`Session-Id`, `Chat-Id`) 维护轮次状态**,每轮结束要 POST `exitSessionQueue` 释放槽位;同一对话必须复用同一个 Chat-Id
+- 聊天用**空闲超时**(沉默 120s 才断,见 `idleBudget`),不能用总时长超时——`AbortSignal.timeout` 会连已经开始的流一起掐断,长对话必然误伤;登录/token 接口是普通 20s 超时
+- 同一份 jwtToken 不支持两个进程并发刷新,只能跑单实例
 
 ### 其他模块
 

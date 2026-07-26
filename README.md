@@ -282,6 +282,9 @@ browser login.
   task.
 - **Plain-JSON jwtToken storage** (no encryption). Swap `JsonTokenStore` for an
   encrypted impl if needed — only `token-store.ts` changes.
+- **One proxy instance per account.** A second process sharing the same
+  `jwt.json` cannot refresh — DevEco appears to invalidate the previous refresh
+  when another one succeeds — and it will fall back to a browser login.
 - **Default port 17128** is not configurable via opencode; change it via
   `DEVECO_PROXY_PORT` and update the provider `baseURL`.
 
@@ -289,10 +292,28 @@ browser login.
 
 ## Recent improvements
 
+- **Idle-based upstream timeout** — a turn is cut off only after DevEco has been
+  *silent* for 120s, not after a fixed total duration. The old 60s wall-clock cap
+  killed healthy long conversations once their history grew large enough, and did
+  it by truncating the SSE stream with no terminating event, so the client only
+  saw a mangled response. Interrupted streams now close their content blocks and
+  emit a real Anthropic `error` event explaining what happened.
+- **Forced tool choice works** — `tool_choice: {"type":"tool","name":"X"}` used to
+  fail the whole request (DevEco types `tool_choice` as an enum and rejects
+  OpenAI's object form). It is now sent as `"required"` with the tool list
+  narrowed to that one tool, which is equivalent from the model's point of view.
+- **`max_tokens` is honoured** — it was silently dropped on the Anthropic path,
+  so every reply ran to the backend's own limit.
+- **Stable Chat-Id per conversation** — DevEco keys server-side turn state on
+  (`Session-Id`, `Chat-Id`); the proxy used to mint a fresh id per request, making
+  every turn look like a brand-new chat. It now derives a stable key per
+  conversation and releases the queue slot via `exitSessionQueue` when a turn ends.
+- **Non-blocking login** — `GET /v2/login` returns a redirect immediately instead
+  of holding the connection open for the 10-minute callback window; requests made
+  while logged out fail fast with the login URL instead of hanging.
 - **Graceful shutdown** — the proxy drains in-flight requests on SIGTERM/SIGINT
   before exiting (systemd service stops cleanly).
-- **Request timeout** — upstream DevEco requests timeout after 60s; login/token
-  endpoints timeout after 20s. No more infinite hangs when the backend is stuck.
+- **Login/token endpoints** still use a plain 20s timeout.
 - **Model list cache TTL** — the dynamic model list refreshes automatically every
   hour (previously cached forever until restart).
 - **Unified HTTP stack** — the custom `HttpClient` has been removed; all HTTP
@@ -313,6 +334,9 @@ browser login.
   headless.
 - **`401` after a while** → access token expired and refresh failed (jwtToken
   no longer valid server-side). Hit `/v2/login` again.
+- **A long turn ends with `Upstream stream ended early`** → DevEco went quiet for
+  120s mid-answer. Retry; if it repeats, the conversation is likely too large for
+  the model's context and needs compacting.
 - **`opencode models` shows no deveco models** → check the `provider.deveco`
   entry exists in `opencode.json` (this is config-driven, not plugin-driven).
 - **Non-streaming requests time out** → DevEco's `/no-stream` endpoint can be

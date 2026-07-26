@@ -166,6 +166,7 @@ export function anthropicToOpenaiChat(body: AnthropicRequest): OpenAIChatRequest
     result.stream_options = { include_usage: true }
   }
 
+  if (body.max_tokens !== undefined) result.max_tokens = body.max_tokens
   if (body.temperature !== undefined) result.temperature = body.temperature
   if (body.top_p !== undefined) result.top_p = body.top_p
 
@@ -173,10 +174,16 @@ export function anthropicToOpenaiChat(body: AnthropicRequest): OpenAIChatRequest
     result.stop = body.stop_sequences
   }
 
-  // Tools
+  // Tools. DevEco's tool_choice is an enum that only accepts "auto" | "none" |
+  // "required" — the OpenAI object form makes it reject the whole request — so
+  // "use exactly this tool" is emulated by requiring a call and offering only
+  // that tool.
+  const forcedTool = forcedToolName(body.tool_choice)
+
   if (body.tools?.length) {
     result.tools = body.tools
       .filter((t) => t.name !== "BatchTool")
+      .filter((t) => !forcedTool || t.name === forcedTool)
       .map((t) => ({
         type: "function" as const,
         function: {
@@ -297,16 +304,24 @@ function convertAssistantMessage(blocks: AnthropicContentBlock[], output: OpenAI
   output.push(msg)
 }
 
-function convertToolChoice(choice: unknown): unknown {
+/** The tool name an Anthropic `{type:"tool"}` choice pins the model to, if any. */
+export function forcedToolName(choice: unknown): string | null {
+  if (typeof choice !== "object" || choice === null) return null
+  const c = choice as Record<string, unknown>
+  return c.type === "tool" && typeof c.name === "string" ? c.name : null
+}
+
+export function convertToolChoice(choice: unknown): unknown {
   if (typeof choice === "string") return choice
   if (typeof choice === "object" && choice !== null) {
     const c = choice as Record<string, unknown>
     if (c.type === "auto") return "auto"
     if (c.type === "any") return "required"
     if (c.type === "none") return "none"
-    if (c.type === "tool" && typeof c.name === "string") {
-      return { type: "function", function: { name: c.name } }
-    }
+    // Never the OpenAI `{type:"function", ...}` object here: DevEco fails the
+    // request with a ToolChoiceMode deserialisation error. The tools list is
+    // narrowed to this one tool instead (see anthropicToOpenaiChat).
+    if (c.type === "tool" && typeof c.name === "string") return "required"
   }
   return "auto"
 }
@@ -437,6 +452,7 @@ function createState(model: string): StreamState {
 export function openaiChatStreamToAnthropic(
   upstream: ReadableStream<Uint8Array>,
   model: string,
+  onUpstreamChunk?: () => void,
 ): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder()
   const decoder = new TextDecoder()
@@ -451,6 +467,10 @@ export function openaiChatStreamToAnthropic(
         while (true) {
           const { done, value } = await reader.read()
           if (done) break
+          // Signals liveness to the caller's idle watchdog. Must fire per raw
+          // upstream chunk, not per emitted event: keep-alives and partial
+          // lines produce no output but still mean the backend is alive.
+          onUpstreamChunk?.()
 
           buffer += decoder.decode(value, { stream: true })
           const lines = buffer.split("\n")
@@ -480,7 +500,24 @@ export function openaiChatStreamToAnthropic(
           }
         }
       } catch (err) {
-        controller.error(err)
+        // The upstream died mid-turn (timeout, reset, abort). Erroring the
+        // stream here would leave the client with a truncated SSE and no clue
+        // why, so close the open blocks and hand it a real Anthropic `error`
+        // event, which every client surfaces as an actual message.
+        closeAllOpenBlocks(state)
+        flushQueue(state, controller, encoder)
+        controller.enqueue(
+          encoder.encode(
+            formatSse("error", {
+              type: "error",
+              error: {
+                type: "api_error",
+                message: `Upstream stream ended early: ${err instanceof Error ? err.message : String(err)}`,
+              },
+            }),
+          ),
+        )
+        controller.close()
         return
       }
 

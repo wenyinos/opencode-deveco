@@ -31,6 +31,21 @@ export const DEVECO_API_BASE = `${DEVECO_BASE_URL}/sse/codeGenie/maas/v2`
 /** Dynamic model list endpoint (Bearer auth). */
 export const DEVECO_MODEL_CONFIG_URL = `${DEVECO_BASE_URL}/codeGenie/modelConfig`
 
+/**
+ * Releases the server-side queue slot a turn holds. DevEco tracks state per
+ * (Session-Id, Chat-Id), so a client that never exits leaks a slot per turn.
+ */
+export const DEVECO_EXIT_QUEUE_URL = `${DEVECO_BASE_URL}/sse/codeGenie/exitSessionQueue`
+
+/**
+ * How long the upstream may stay *silent* before we give up.
+ *
+ * This is deliberately not a total-duration budget: a long agentic turn can
+ * legitimately stream for minutes, and capping the total would kill healthy
+ * conversations as soon as their history grew large enough.
+ */
+export const UPSTREAM_IDLE_TIMEOUT_MS = 120_000
+
 /** accessToken lifetime in ms (30 min, matching deveco-code). */
 export const ACCESS_TOKEN_EXPIRES_MS = 30 * 60 * 1000
 

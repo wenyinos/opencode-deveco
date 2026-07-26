@@ -245,14 +245,20 @@ export ANTHROPIC_MODEL=GLM-5.1
 - **仅中国大陆站**。非 CN 的 `siteId` 会被拒绝。
 - **代理必须常驻运行**，opencode 才能访问 DevEco（当前 opencode 不加载外部插件 auth）。建议做成后台服务 / 开机自启。
 - **jwtToken 明文存储**（不加密）。如需加密，把 `JsonTokenStore` 换成加密实现即可，只改 `token-store.ts`。
+- **同一账号只能跑一个代理实例**。共用同一份 `jwt.json` 的第二个进程刷新必定失败（DevEco 似乎会在一次刷新成功后使先前的刷新凭据失效），只能退回浏览器登录。
 - **默认端口 17128**，opencode 侧无法直接配置；通过 `DEVECO_PROXY_PORT` 改并同步更新 provider 的 `baseURL`。
 
 ---
 
 ## 近期改进
 
+- **上游超时改为「空闲超时」** — 只有当 DevEco **连续沉默** 120 秒才中断，不再限制单轮总时长。原来 60 秒的总时长上限会在对话历史长到一定程度后误杀正常会话，而且是直接截断 SSE、不发任何结束事件，客户端只看到一段残缺响应。现在流被中断时会关闭已开的内容块，并补发一个真正的 Anthropic `error` 事件说明原因。
+- **强制指定工具可用了** — `tool_choice: {"type":"tool","name":"X"}` 原本会让整个请求失败（DevEco 把 `tool_choice` 定义成枚举，不接受 OpenAI 的对象形式）。现在改为发送 `"required"` 并把工具列表收窄到那一个工具，对模型来说语义等价。
+- **`max_tokens` 会被遵守** — Anthropic 路径上原本静默丢弃了这个字段，导致每次回复都跑到后端自己的上限。
+- **Chat-Id 按对话保持稳定** — DevEco 用 (`Session-Id`, `Chat-Id`) 维护服务端轮次状态；代理原本每个请求都新生成一个 id，使每一轮看起来都像全新会话。现在按对话推导稳定的键，并在每轮结束时通过 `exitSessionQueue` 释放队列槽位。
+- **登录不再阻塞** — `GET /v2/login` 立即返回重定向，不再占着连接等满 10 分钟回调窗口；未登录时发请求会快速失败并附上登录 URL，而不是一直挂着。
 - **优雅关停** — 代理收到 SIGTERM/SIGINT 后会等待正在处理的请求完成再退出，systemd 服务停止时不再丢失请求。
-- **请求超时** — 转发到 DevEco 的请求 60 秒超时；login/token 端点 20 秒超时，避免后端卡死导致代理无限挂起。
+- **login/token 端点** 仍是普通的 20 秒超时。
 - **模型列表缓存 TTL** — 动态模型列表每小时自动刷新（此前永不过期，需重启才能获取新模型）。
 - **统一 HTTP 栈** — 删除自定义 `HttpClient`，所有 HTTP 调用统一使用 Node 内置 `fetch`。
 - **ESLint + 测试** — 新增 `npm run lint` 和 `npm run test`。
@@ -265,6 +271,7 @@ export ANTHROPIC_MODEL=GLM-5.1
 - **`opencode run ... -m deveco/glm-5` 报连接被拒** → 代理没在跑。启动它（`node dist/proxy.js`）。
 - **第一次请求弹了浏览器并返回 `401`** → 未登录时的正常表现：代理在后台发起登录，而不是让你干等。完成华为登录后重试即可；之后 30 分钟内都是无头的。
 - **过一阵返回 `401`** → access token 过期且刷新失败（jwtToken 在服务端已失效）。再访问一次 `/v2/login`。
+- **长回复中途报 `Upstream stream ended early`** → DevEco 在生成过程中沉默超过 120 秒。重试即可；若反复出现，多半是对话已超出模型上下文，需要压缩历史。
 - **`opencode models` 没有 deveco 模型** → 检查 `opencode.json` 里有没有 `provider.deveco` 条目（这是配置驱动，不是插件驱动）。
 - **非流式请求超时** → DevEco 的 `/no-stream` 接口可能较慢；优先用流式（opencode 默认就是）。
 
