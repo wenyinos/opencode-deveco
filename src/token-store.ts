@@ -69,6 +69,13 @@ export class JsonTokenStore implements TokenStore {
       const raw = fs.readFileSync(this.filePath, "utf8")
       const parsed = JSON.parse(raw) as StoredShape
       if (typeof parsed.jwt !== "string" || !parsed.jwt) return null
+      // A stored value that isn't a 3-segment JWT is corrupt — clear it so the
+      // proxy prompts a fresh login instead of sending garbage upstream.
+      if (parsed.jwt.split(".").length !== 3) {
+        log.warn("token-store: stored jwtToken is malformed, clearing")
+        await this.clear()
+        return null
+      }
       return parsed.jwt
     } catch (err) {
       log.warn("token-store: failed to load jwtToken, clearing", { error: String(err) })

@@ -384,6 +384,7 @@ class LoginService {
     // resolveCallback/rejectCallback are ready the instant a request lands.
     const callbackPromise = server.waitForCallback(this.config.timeout)
     const url = this.buildLoginUrl(server.getPort(), clientSecret)
+    this.validateLoginUrl(url)
     if (opts.openBrowser !== false) this.openLoginPage(url)
 
     const result = this.finishLogin(callbackPromise).finally(async () => {
@@ -445,11 +446,29 @@ class LoginService {
   }
 
   /**
+   * Reject a login URL before it reaches the OS launcher. `new URL` leaves `$`
+   * and backticks in place, which stay active in the Windows launcher's
+   * PowerShell `Start "..."` string — so both the scheme and the character set
+   * are explicitly allowlisted.
+   */
+  private validateLoginUrl(loginUrl: string): void {
+    const parsed = new URL(loginUrl)
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      throw new Error(`Unsupported login URL scheme: ${parsed.protocol}`)
+    }
+    if (!/^[A-Za-z0-9._~:/?=&%#@+-]+$/.test(parsed.href)) {
+      throw new Error("Login URL contains disallowed characters")
+    }
+  }
+
+  /**
    * Best-effort browser open. Never blocks and never throws: when the proxy
    * runs as a background service there may be no desktop session to open into
    * (no DISPLAY), and the caller falls back to handing the URL to its client.
    */
   private openLoginPage(loginUrl: string): void {
+    // Never log the clientSecret embedded in the login URL.
+    const safeUrl = loginUrl.replace(/code=[^&]*/g, "code=***")
     const { command, args, shell } = browserOpenCommand(process.platform, loginUrl)
     try {
       // detached + ignored stdio: a browser that outlives this call must not
@@ -463,12 +482,14 @@ class LoginService {
       child.on("error", (err) =>
         log.warn("could not open login page in a browser; open the URL manually", {
           command,
+          url: safeUrl,
           error: String(err),
         }),
       )
       child.unref()
     } catch (err) {
       log.warn("could not open login page in a browser; open the URL manually", {
+        url: safeUrl,
         error: String(err),
       })
     }
@@ -539,6 +560,15 @@ class LoginService {
    * Returns new access/refresh tokens, or null on failure.
    */
   async refreshToken(jwtToken: string): Promise<RefreshResult | null> {
+    // If the JWT itself has already expired, refreshing will always fail — skip
+    // the network call and let the caller prompt a fresh login.
+    try {
+      const exp = parseJwt(jwtToken).exp
+      if (exp && Date.now() >= exp * 1000) return null
+    } catch {
+      /* unparseable JWT — let the server decide */
+    }
+
     const url = `${this.config.baseUrl}/${this.config.jwtTokenCheckUrl}`
     try {
       const res = await fetch(url, {

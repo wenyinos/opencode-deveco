@@ -185,7 +185,7 @@ opencode run "say hi" -m deveco/GLM-5.1   # 通过代理发真实请求
 
 | 方法 & 路径 | 用途 |
 |---|---|
-| `POST /v2/chat/completions` | OpenAI 兼容 — 转发到 DevEco |
+| `POST /v2/chat/completions` | OpenAI 兼容 — 转发到 DevEco（默认非流式；显式 `"stream": true` 才走 SSE 流式） |
 | `POST /anthropic/v1/messages` | Anthropic Messages API — 自动转换为 OpenAI 格式 |
 | `GET  /v2/models` | DevEco 模型列表（动态获取，失败回退静态；1 小时缓存 TTL） |
 | `GET  /v2/login` | 302 跳转到华为 OAuth 页面（不跟随重定向的客户端会拿到 `{login_url}`） |
@@ -280,7 +280,7 @@ Claude Code 长会话跑几轮就报错的问题，以及登录相关的修复�
 - **过一阵返回 `401`** → access token 过期且刷新失败（jwtToken 在服务端已失效）。再访问一次 `/v2/login`。
 - **长回复中途报 `Upstream stream ended early`** → DevEco 在生成过程中沉默超过 120 秒。重试即可；若反复出现，多半是对话已超出模型上下文，需要压缩历史。
 - **`opencode models` 没有 deveco 模型** → 检查 `opencode.json` 里有没有 `provider.deveco` 条目（这是配置驱动，不是插件驱动）。
-- **非流式请求超时** → DevEco 的 `/no-stream` 接口可能较慢；优先用流式（opencode 默认就是）。
+- **非流式请求超时** → DevEco 的 `/no-stream` 接口可能较慢；请求体显式加 `"stream": true` 切回流式。代理默认以非流式转发 OpenAI 请求（仅显式 `stream: true` 才启用 SSE）；opencode 恒发 `stream: true`，不受影响。
 
 ---
 

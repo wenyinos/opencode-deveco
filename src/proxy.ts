@@ -27,7 +27,7 @@ import {
   UPSTREAM_IDLE_TIMEOUT_MS,
   log,
 } from "./config.js"
-import { createLoginService, userInfoFromJwt, type UserInfo } from "./auth-login.js"
+import { createLoginService, userInfoFromJwt, type RefreshResult, type UserInfo } from "./auth-login.js"
 import { JsonTokenStore } from "./token-store.js"
 import { getDevecoProviderConfig } from "./models.js"
 import {
@@ -115,6 +115,12 @@ export class DevEcoProxy {
   // A browser login in flight, shared by all callers so concurrent requests
   // never spin up competing callback servers.
   private pendingLogin: Promise<string> | null = null
+  // Single-flight + cooldown for access-token refresh: concurrent callers share
+  // one in-flight refresh, and a recent failure short-circuits retries so an
+  // invalid credential isn't hammered by every request.
+  private refreshPromise: Promise<RefreshResult | null> | null = null
+  private lastRefreshFailedAt = 0
+  private static readonly REFRESH_COOLDOWN_MS = 30_000
   // Track in-flight requests for graceful shutdown.
   private readonly activeRequests = new Set<http.ServerResponse>()
 
@@ -263,6 +269,29 @@ export class DevEcoProxy {
     return pending
   }
 
+  /**
+   * Refresh the access token, deduped across concurrent callers and gated by a
+   * cooldown after a recent failure. Returns new tokens, or null on failure.
+   */
+  private async refreshAccessToken(jwtToken: string): Promise<RefreshResult | null> {
+    if (
+      this.lastRefreshFailedAt &&
+      Date.now() - this.lastRefreshFailedAt < DevEcoProxy.REFRESH_COOLDOWN_MS
+    ) {
+      log.warn("token refresh skipped: in cooldown after recent failure")
+      return null
+    }
+    if (!this.refreshPromise) {
+      this.refreshPromise = this.loginService.refreshToken(jwtToken).finally(() => {
+        this.refreshPromise = null
+      })
+    }
+    const refreshed = await this.refreshPromise
+    if (refreshed) this.lastRefreshFailedAt = 0
+    else this.lastRefreshFailedAt = Date.now()
+    return refreshed
+  }
+
   /** Ensure we have a non-expired access token; login or refresh as needed. */
   private async ensureToken(): Promise<string> {
     if (this.session && this.session.expiresAt > Date.now()) {
@@ -273,7 +302,7 @@ export class DevEcoProxy {
     if (this.session || (await this.tokenStore.load())) {
       const jwtToken = await this.tokenStore.load()
       if (jwtToken) {
-        const refreshed = await this.loginService.refreshToken(jwtToken)
+        const refreshed = await this.refreshAccessToken(jwtToken)
         if (refreshed) {
           this.session = {
             userInfo:
@@ -377,7 +406,10 @@ export class DevEcoProxy {
       const parsed = JSON.parse(bodyBuffer.toString("utf8"))
       if (parsed && typeof parsed === "object") {
         const obj = parsed as Record<string, unknown>
-        if (obj.stream === false) stream = false
+        // Default to non-streaming: only an explicit `stream: true` opts in to
+        // SSE (opencode's streamText always sends `stream: true`; other clients
+        // usually expect a JSON reply when they don't ask for a stream).
+        if (obj.stream !== true) stream = false
         if (typeof obj.model === "string") model = obj.model
         convKey = conversationKey(parsed)
       }
@@ -441,7 +473,7 @@ export class DevEcoProxy {
     if (upstream.status === 401 && this.session) {
       const jwtToken = await this.tokenStore.load()
       if (jwtToken) {
-        const refreshed = await this.loginService.refreshToken(jwtToken)
+        const refreshed = await this.refreshAccessToken(jwtToken)
         if (refreshed) {
           this.session.accessToken = refreshed.accessToken
           this.session.refreshToken = refreshed.refreshToken
@@ -556,7 +588,7 @@ export class DevEcoProxy {
     if (upstream.status === 401 && this.session) {
       const jwtToken = await this.tokenStore.load()
       if (jwtToken) {
-        const refreshed = await this.loginService.refreshToken(jwtToken)
+        const refreshed = await this.refreshAccessToken(jwtToken)
         if (refreshed) {
           this.session.accessToken = refreshed.accessToken
           this.session.refreshToken = refreshed.refreshToken

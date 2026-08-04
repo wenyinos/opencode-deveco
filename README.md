@@ -203,7 +203,7 @@ opencode run "say hi" -m deveco/GLM-5.1 # real request through the proxy
 
 | Method & path | Purpose |
 |---|---|
-| `POST /v2/chat/completions` | OpenAI-compatible — forwarded to DevEco |
+| `POST /v2/chat/completions` | OpenAI-compatible — forwarded to DevEco (non-streaming by default; an explicit `"stream": true` opts into SSE) |
 | `POST /anthropic/v1/messages` | Anthropic Messages API — auto-translated to/from OpenAI |
 | `GET  /v2/models` | DevEco model list (dynamic, static fallback; 1-hour cache TTL) |
 | `GET  /v2/login` | 302 → Huawei OAuth page (returns `{login_url}` to non-redirecting clients) |
@@ -336,7 +336,9 @@ behind each.
 - **`opencode models` shows no deveco models** → check the `provider.deveco`
   entry exists in `opencode.json` (this is config-driven, not plugin-driven).
 - **Non-streaming requests time out** → DevEco's `/no-stream` endpoint can be
-  slow; prefer streaming (opencode's default).
+  slow; send `"stream": true` to opt back into streaming. The proxy defaults
+  OpenAI requests to non-streaming (only an explicit `stream: true` enables
+  SSE); opencode always sends `stream: true`, so it is unaffected.
 
 ---
 
