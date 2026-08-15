@@ -54,6 +54,16 @@ export interface UserInfo {
   isRealName: boolean
 }
 
+/**
+ * DevEco has shipped both `realName: true` (boolean, current) and the string
+ * form "true"/"false" — normalise either to a boolean.
+ */
+export function parseRealName(value: unknown): boolean {
+  if (typeof value === "boolean") return value
+  if (typeof value === "string") return value === "true"
+  return false
+}
+
 export interface LoginResult {
   success: boolean
   cancelled?: boolean
@@ -75,7 +85,9 @@ interface TokenCheckResponse {
     accessToken: string
     refreshToken?: string
     nationalCode: string
-    realName: string
+    // DevEco returns a boolean here (verified live), but older payloads may
+    // have carried the string "true"/"false".
+    realName: string | boolean
   }
 }
 
@@ -537,7 +549,7 @@ class LoginService {
       jwtToken,
       countryCode: "CN",
       language: "zh_CN",
-      isRealName: tokenInfo.userInfo.realName === "true",
+      isRealName: parseRealName(tokenInfo.userInfo.realName),
     }
     return userInfo
   }

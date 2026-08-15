@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest"
-import { browserOpenCommand, parseJwt, userInfoFromJwt } from "./auth-login.js"
-import { conversationKey, idleBudget } from "./proxy.js"
+import { describe, it, expect, afterEach } from "vitest"
+import { browserOpenCommand, parseJwt, parseRealName, userInfoFromJwt } from "./auth-login.js"
+import { conversationKey, idleBudget, sessionKeyFromHeaders } from "./proxy.js"
 
 // Helper: build a minimal JWT (header.payload.signature) with a given payload.
 function makeJwt(payload: Record<string, unknown>): string {
@@ -93,8 +93,21 @@ describe("browserOpenCommand", () => {
   })
 })
 
+describe("parseRealName", () => {
+  it("accepts the boolean shape DevEco returns today", () => {
+    expect(parseRealName(true)).toBe(true)
+    expect(parseRealName(false)).toBe(false)
+  })
+
+  it("still accepts the legacy string shape", () => {
+    expect(parseRealName("true")).toBe(true)
+    expect(parseRealName("false")).toBe(false)
+    expect(parseRealName(undefined)).toBe(false)
+  })
+})
+
 describe("/v2 path stripping", () => {
-  const strip = (p: string) => p.replace(/^\/v2/, "") || "/"
+  const strip = (p: string) => p.replace(/^\/v2(?=\/|$)/, "") || "/"
 
   it("strips /v2 prefix", () => {
     expect(strip("/v2/chat/completions")).toBe("/chat/completions")
@@ -105,6 +118,10 @@ describe("/v2 path stripping", () => {
   it("leaves non-/v2 paths unchanged", () => {
     expect(strip("/chat/completions")).toBe("/chat/completions")
     expect(strip("/models")).toBe("/models")
+  })
+
+  it("does not strip words that merely start with /v2", () => {
+    expect(strip("/v2models")).toBe("/v2models")
   })
 
   it("maps bare /v2 to /", () => {
@@ -143,8 +160,28 @@ describe("idleBudget", () => {
   })
 })
 
+describe("sessionKeyFromHeaders", () => {
+  it("reads the supported explicit session headers in order", () => {
+    expect(sessionKeyFromHeaders({ "x-deveco-session": "s1" })).toBe("s1")
+    expect(sessionKeyFromHeaders({ "x-session-affinity": "s2" })).toBe("s2")
+    expect(sessionKeyFromHeaders({ "x-session-id": "s3" })).toBe("s3")
+    expect(sessionKeyFromHeaders({ "x-deveco-session": "s1", "x-session-id": "s3" })).toBe("s1")
+  })
+
+  it("returns null for missing or blank headers", () => {
+    expect(sessionKeyFromHeaders({})).toBeNull()
+    expect(sessionKeyFromHeaders({ "x-session-id": "   " })).toBeNull()
+  })
+})
+
 describe("conversationKey", () => {
   const first = { role: "user", content: "开始" }
+  const OLD_MODE = process.env.DEVECO_SESSION_KEY_MODE
+
+  afterEach(() => {
+    if (OLD_MODE === undefined) delete process.env.DEVECO_SESSION_KEY_MODE
+    else process.env.DEVECO_SESSION_KEY_MODE = OLD_MODE
+  })
 
   it("stays put as the conversation grows", () => {
     const round1 = conversationKey({ system: "sys", messages: [first] })
@@ -158,6 +195,20 @@ describe("conversationKey", () => {
   it("separates different conversations", () => {
     expect(conversationKey({ system: "sys", messages: [first] })).not.toBe(
       conversationKey({ system: "sys", messages: [{ role: "user", content: "另一个话题" }] }),
+    )
+  })
+
+  it("keeps the key stable when only the system prompt changes (default mode)", () => {
+    delete process.env.DEVECO_SESSION_KEY_MODE
+    expect(conversationKey({ system: "system-A", messages: [first] })).toBe(
+      conversationKey({ system: "system-B", messages: [first] }),
+    )
+  })
+
+  it("includes the system prompt when DEVECO_SESSION_KEY_MODE=system-first", () => {
+    process.env.DEVECO_SESSION_KEY_MODE = "system-first"
+    expect(conversationKey({ system: "system-A", messages: [first] })).not.toBe(
+      conversationKey({ system: "system-B", messages: [first] }),
     )
   })
 })

@@ -198,6 +198,13 @@ export function anthropicToOpenaiChat(body: AnthropicRequest): OpenAIChatRequest
     result.tool_choice = convertToolChoice(body.tool_choice)
   }
 
+  // DevEco would reject tool_choice:"required" with no tools to call. This can
+  // happen when the client forces a tool that isn't in body.tools (or all
+  // tools were filtered out) — degrade to no constraint instead of a 400.
+  if (result.tool_choice === "required" && (!result.tools || result.tools.length === 0)) {
+    delete result.tool_choice
+  }
+
   // thinking → reasoning_effort
   if (body.thinking) {
     const budget = body.thinking.budget_tokens
@@ -243,18 +250,30 @@ function convertUserMessage(blocks: AnthropicContentBlock[], output: OpenAIChatM
       const url = `data:${block.source.media_type};base64,${block.source.data}`
       contentParts.push({ type: "image_url", image_url: { url } })
     } else if (block.type === "tool_result") {
-      const resultContent = typeof block.content === "string"
-        ? block.content
-        : Array.isArray(block.content)
-          ? block.content
-            .filter((b): b is Extract<AnthropicContentBlock, { type: "text" }> => b.type === "text")
-            .map((b) => b.text)
-            .join("\n")
-          : ""
+      // Preserve tool-result images: they may be screenshots the vision model
+      // needs to see (e.g. UI verification). Text-only tool results still use
+      // a plain string so they stay compatible with strict OpenAI clients.
+      const toolParts: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }> = []
+      if (typeof block.content === "string") {
+        if (block.content) toolParts.push({ type: "text", text: block.content })
+      } else if (Array.isArray(block.content)) {
+        for (const b of block.content) {
+          if (b.type === "text") {
+            toolParts.push({ type: "text", text: b.text })
+          } else if (b.type === "image") {
+            const url = `data:${b.source.media_type};base64,${b.source.data}`
+            toolParts.push({ type: "image_url", image_url: { url } })
+          }
+        }
+      }
+      const toolContent =
+        toolParts.length === 1 && toolParts[0].type === "text"
+          ? toolParts[0].text
+          : toolParts
       output.push({
         role: "tool",
         tool_call_id: block.tool_use_id,
-        content: resultContent,
+        content: toolContent,
       })
     }
   }
@@ -545,9 +564,15 @@ function flushQueue(
   state.queue.length = 0
 }
 
-function ensureMessageStart(state: StreamState, chunkId?: string): void {
+function ensureMessageStart(
+  state: StreamState,
+  chunkId?: string,
+  usage?: OpenAIChatStreamChunk["usage"],
+): void {
   if (state.messageStartSent) return
   state.messageStartSent = true
+  const promptTokens = usage?.prompt_tokens ?? 0
+  const cachedRead = usage?.prompt_tokens_details?.cached_tokens ?? 0
   enqueue(state, "message_start", {
     type: "message_start",
     message: {
@@ -558,7 +583,16 @@ function ensureMessageStart(state: StreamState, chunkId?: string): void {
       model: state.model,
       stop_reason: null,
       stop_sequence: null,
-      usage: { input_tokens: 0, output_tokens: 0 },
+      // DevEco sends usage in the first streaming chunk too, so use it here
+      // instead of leaving input_tokens at 0 (the Anthropic message_delta
+      // usage only carries output_tokens). Mirror the non-stream mapper: cached
+      // prompt tokens are reported as cache_read_input_tokens and subtracted
+      // from input_tokens.
+      usage: {
+        input_tokens: cachedRead > 0 ? Math.max(0, promptTokens - cachedRead) : promptTokens,
+        output_tokens: 0,
+        ...(cachedRead > 0 ? { cache_read_input_tokens: cachedRead } : {}),
+      },
     },
   })
 }
@@ -627,7 +661,7 @@ function processChunk(chunk: OpenAIChatStreamChunk, state: StreamState): void {
   }
 
   state.model = chunk.model || state.model
-  ensureMessageStart(state, chunk.id)
+  ensureMessageStart(state, chunk.id, chunk.usage)
 
   const delta = choice.delta as Record<string, unknown>
 

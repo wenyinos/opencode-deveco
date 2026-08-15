@@ -29,13 +29,15 @@ import {
 } from "./config.js"
 import { createLoginService, userInfoFromJwt, type RefreshResult, type UserInfo } from "./auth-login.js"
 import { JsonTokenStore } from "./token-store.js"
-import { getDevecoProviderConfig } from "./models.js"
+import { getDevecoProviderConfig, resetModelCache } from "./models.js"
 import {
   anthropicToOpenaiChat,
   openaiChatToAnthropic,
   openaiChatStreamToAnthropic,
   type AnthropicRequest,
 } from "./anthropic-transform.js"
+import { applyVisionRouting } from "./vision-routing.js"
+import { normalizeOpenAIToolChoice } from "./openai-normalize.js"
 
 const DEVECO_ORIGIN = new URL(DEVECO_API_BASE).origin // https://cn.devecostudio.huawei.com
 const DEVECO_API_PREFIX = new URL(DEVECO_API_BASE).pathname.replace(/\/$/, "") // /sse/codeGenie/maas/v2
@@ -89,18 +91,39 @@ export function idleBudget(idleMs: number): {
  * A stable per-conversation key.
  *
  * Neither the Anthropic nor the OpenAI wire format carries a session id, but a
- * conversation's opening turn never changes as it grows — so hashing the system
- * prompt plus the first message identifies the conversation across rounds, which
- * is what DevEco's Chat-Id is expected to track.
+ * conversation's opening user message never changes as it grows — so by default
+ * we hash only that first user message. This keeps the Chat-Id stable even when
+ * Claude Code's system prompt contains volatile content (date, cwd, etc.),
+ * which previously minted a new DevEco session every turn and hit the upstream
+ * "New session request rate exceeded" 403.
+ *
+ * Set DEVECO_SESSION_KEY_MODE=system-first to restore the old behaviour
+ * (system + first message) if you need system prompts to separate sessions.
  */
 export function conversationKey(body: unknown): string {
   try {
     const b = body as { system?: unknown; messages?: unknown[] }
-    const head = JSON.stringify([b.system ?? "", b.messages?.[0] ?? ""])
+    const mode = (process.env.DEVECO_SESSION_KEY_MODE || "first-message").toLowerCase()
+    const head =
+      mode === "system-first"
+        ? JSON.stringify([b.system ?? "", b.messages?.[0] ?? ""])
+        : JSON.stringify(b.messages?.[0] ?? "")
     return crypto.createHash("sha256").update(head).digest("hex").slice(0, 32)
   } catch {
     return crypto.randomUUID().replace(/-/g, "")
   }
+}
+
+/** Read an explicit conversation/session id from request headers, if present. */
+export function sessionKeyFromHeaders(
+  headers: Record<string, string | string[] | undefined>,
+): string | null {
+  const value =
+    headers["x-deveco-session"] ??
+    headers["x-session-affinity"] ??
+    headers["x-session-id"]
+  if (typeof value === "string" && value.trim()) return value.trim()
+  return null
 }
 
 export class DevEcoProxy {
@@ -121,6 +144,11 @@ export class DevEcoProxy {
   private refreshPromise: Promise<RefreshResult | null> | null = null
   private lastRefreshFailedAt = 0
   private static readonly REFRESH_COOLDOWN_MS = 30_000
+  // Auto-triggered browser logins are throttled so a logged-out client that
+  // keeps polling can't pop a new browser window / callback server each time.
+  // Explicit GET /v2/login is never throttled.
+  private lastLoginTriggeredAt = 0
+  private static readonly LOGIN_TRIGGER_COOLDOWN_MS = 5 * 60_000
   // Track in-flight requests for graceful shutdown.
   private readonly activeRequests = new Set<http.ServerResponse>()
 
@@ -151,11 +179,24 @@ export class DevEcoProxy {
     if (!this.server) return
     // Stop accepting new connections; wait for in-flight requests to finish.
     await new Promise<void>((resolve) => this.server!.close(() => resolve()))
+    // HTTP keep-alive connections are otherwise allowed to hold shutdown open.
+    this.server.closeIdleConnections?.()
     this.server = null
   }
 
   getPort(): number {
     return this.port
+  }
+
+  /**
+   * An explicit session id supplied by the client, if any. This is more stable
+   * than the system+first-message heuristic and lets callers pin a DevEco
+   * conversation across requests whose system prompt changes.
+   */
+  private sessionKeyFromRequest(req: http.IncomingMessage): string | null {
+    const key = sessionKeyFromHeaders(req.headers as Record<string, string | string[] | undefined>)
+    if (key) log.debug("using explicit session id", { session: key })
+    return key
   }
 
   /**
@@ -174,6 +215,9 @@ export class DevEcoProxy {
       }
       chatId = crypto.randomUUID().replace(/-/g, "")
       this.sessionChatIdMap.set(key, chatId)
+      log.debug("minted Chat-Id", { key, chatId })
+    } else {
+      log.debug("reusing Chat-Id", { key, chatId })
     }
     return chatId
   }
@@ -185,23 +229,39 @@ export class DevEcoProxy {
    */
   private exitQueue(key: string, chatId: string, model: string, token: string): void {
     const url = `${DEVECO_EXIT_QUEUE_URL}?modelId=${encodeURIComponent(model)}`
-    void fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Session-Id": key,
-        "Chat-Id": chatId,
-        Authorization: `Bearer ${token}`,
-      },
-      signal: AbortSignal.timeout(5_000),
-    })
-      .then((r) => {
-        // Silent when it works; a slot we failed to release is worth seeing,
-        // since the symptom (errors after many turns) is otherwise baffling.
-        if (r.ok) log.debug(`exitSessionQueue -> ${r.status}`)
-        else log.warn(`exitSessionQueue -> HTTP ${r.status}`)
+    const attempt = (retriesLeft: number): void => {
+      fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Session-Id": key,
+          "Chat-Id": chatId,
+          Authorization: `Bearer ${token}`,
+        },
+        signal: AbortSignal.timeout(5_000),
       })
-      .catch((err) => log.warn("exitSessionQueue failed", { error: String(err) }))
+        .then((r) => {
+          // Silent when it works; a slot we failed to release is worth seeing,
+          // since the symptom (errors after many turns) is otherwise baffling.
+          if (r.ok) {
+            log.debug(`exitSessionQueue -> ${r.status}`)
+          } else if (retriesLeft > 0) {
+            log.warn(`exitSessionQueue -> HTTP ${r.status}, retrying`)
+            setTimeout(() => attempt(retriesLeft - 1), 500)
+          } else {
+            log.warn(`exitSessionQueue -> HTTP ${r.status}`)
+          }
+        })
+        .catch((err) => {
+          if (retriesLeft > 0) {
+            log.warn("exitSessionQueue failed, retrying", { error: String(err) })
+            setTimeout(() => attempt(retriesLeft - 1), 500)
+          } else {
+            log.warn("exitSessionQueue failed", { error: String(err) })
+          }
+        })
+    }
+    attempt(1) // one initial attempt + one retry
   }
 
   /** Track a response so stop() can wait for it to finish. */
@@ -250,6 +310,7 @@ export class DevEcoProxy {
               refreshToken: r.userInfo.refreshToken,
               expiresAt: Date.now() + ACCESS_TOKEN_EXPIRES_MS,
             }
+            resetModelCache()
             log.info(`DevEco login complete (user: ${r.userInfo.userName})`)
           } else {
             log.warn("DevEco login did not complete", { error: r.error })
@@ -292,8 +353,15 @@ export class DevEcoProxy {
     return refreshed
   }
 
-  /** Ensure we have a non-expired access token; login or refresh as needed. */
-  private async ensureToken(): Promise<string> {
+  /**
+   * Ensure we have a non-expired access token; refresh as needed.
+   *
+   * With `allowLogin` (default) a missing credential starts a browser login and
+   * throws with the login URL. With `allowLogin = false` callers that just want
+   * to read something (e.g. the model list) get an empty token back instead of
+   * a browser popup.
+   */
+  private async ensureToken(allowLogin = true): Promise<string> {
     if (this.session && this.session.expiresAt > Date.now()) {
       return this.session.accessToken
     }
@@ -319,9 +387,20 @@ export class DevEcoProxy {
       }
     }
 
+    if (!allowLogin) return ""
+
     // No usable credentials. Kick off a browser login in the background and
     // fail *this* request immediately: waiting here would hang the client for
     // the full 10-minute callback window, which is what "no reply" looks like.
+    if (
+      this.lastLoginTriggeredAt &&
+      Date.now() - this.lastLoginTriggeredAt < DevEcoProxy.LOGIN_TRIGGER_COOLDOWN_MS
+    ) {
+      throw new Error(
+        "DevEco login required (auto-login throttled). Visit GET /v2/login to start a new login.",
+      )
+    }
+    this.lastLoginTriggeredAt = Date.now()
     log.info("no valid DevEco token; starting browser login")
     const url = await this.beginLogin(true)
     throw new Error(
@@ -338,12 +417,13 @@ export class DevEcoProxy {
     const host = req.headers.host || `${this.hostname}:${this.port}`
     const url = new URL(req.url ?? "/", `http://${host}`)
     // Normalise: strip /v2 prefix so all route checks are simple.
-    const p = url.pathname.replace(/^\/v2/, "") || "/"
+    const p = url.pathname.replace(/^\/v2(?=\/|$)/, "") || "/"
 
     try {
       if (p === "/status") {
+        const loggedIn = !!(this.session && this.session.expiresAt > Date.now())
         return this.json(res, 200, {
-          logged_in: !!this.session,
+          logged_in: loggedIn,
           user: this.session?.userInfo?.userName ?? null,
           expires_in_ms: this.session ? Math.max(0, this.session.expiresAt - Date.now()) : 0,
         })
@@ -363,11 +443,14 @@ export class DevEcoProxy {
       if (p === "/logout") {
         await this.loginService.logout()
         this.session = null
+        resetModelCache()
         return this.json(res, 200, { ok: true })
       }
 
       if (p === "/models") {
-        const token = await this.ensureToken().catch(() => "")
+        // Listing models must not pop a browser: use the current session when
+        // available and fall back to the static defaults when logged out.
+        const token = await this.ensureToken(false)
         const cfg = await getDevecoProviderConfig(token)
         const data = Object.keys(cfg.models ?? {}).map((id) => ({ id, object: "model" }))
         return this.json(res, 200, { object: "list", data })
@@ -402,6 +485,7 @@ export class DevEcoProxy {
     let stream = true
     let model = "?"
     let convKey = crypto.randomUUID().replace(/-/g, "")
+    let parsedBody: Record<string, unknown> | null = null
     try {
       const parsed = JSON.parse(bodyBuffer.toString("utf8"))
       if (parsed && typeof parsed === "object") {
@@ -411,7 +495,11 @@ export class DevEcoProxy {
         // usually expect a JSON reply when they don't ask for a stream).
         if (obj.stream !== true) stream = false
         if (typeof obj.model === "string") model = obj.model
-        convKey = conversationKey(parsed)
+        // Prefer an explicit client session id; otherwise hash the ORIGINAL
+        // body (vision rerouting may rewrite messages upstream, but the
+        // conversation identity must stay stable).
+        convKey = this.sessionKeyFromRequest(req) ?? conversationKey(parsed)
+        parsedBody = obj
       }
     } catch {
       /* forward as-is if not JSON */
@@ -448,54 +536,85 @@ export class DevEcoProxy {
       "accept-language": "zh-CN",
     }
 
-    const ctx = { model, stream, upstreamUrl, t0: Date.now() }
-    log.info(`-> POST ${stream ? "stream" : "no-stream"} model=${model}`)
+    // DevEco rejects the OpenAI object form of tool_choice; rewrite it before
+    // anything else. The vision fallback below may then strip tools entirely.
+    let routedBody: Record<string, unknown> | null = null
+    if (parsedBody) {
+      const normalized = normalizeOpenAIToolChoice(parsedBody)
+      if (normalized.changed) routedBody = normalized.body
+    }
 
+    // Vision fallback: a text-only model asking about an image in the newest
+    // user message goes to the vision model instead; stale images in history
+    // are replaced with placeholders so GLM keeps working on later turns.
+    let upstreamModel = model
     // fetch's BodyInit type under our DOM lib settings doesn't accept Buffer/
     // Uint8Array directly, but node's fetch accepts raw bytes at runtime.
-    const bodyInit = bodyBuffer as unknown as BodyInit
-
-    const budget = idleBudget(UPSTREAM_IDLE_TIMEOUT_MS)
-
-    // Forward to DevEco and stream/passthrough the response back.
-    const upstream = await fetch(upstreamUrl, {
-      method: "POST",
-      headers,
-      body: bodyInit,
-      signal: budget.signal,
-    }).catch((err) => {
-      budget.done()
-      throw new Error(`upstream fetch failed: ${String(err)}`)
-    })
-
-    // If DevEco says our token is bad/refresh needed, try one refresh+retry.
-    let responseToPipe = upstream
-    if (upstream.status === 401 && this.session) {
-      const jwtToken = await this.tokenStore.load()
-      if (jwtToken) {
-        const refreshed = await this.refreshAccessToken(jwtToken)
-        if (refreshed) {
-          this.session.accessToken = refreshed.accessToken
-          this.session.refreshToken = refreshed.refreshToken
-          this.session.expiresAt = Date.now() + ACCESS_TOKEN_EXPIRES_MS
-          headers.Authorization = `Bearer ${refreshed.accessToken}`
-          log.warn("upstream 401 → refreshed token, retrying once")
-          budget.touch()
-          responseToPipe = await fetch(upstreamUrl, {
-            method: "POST",
-            headers,
-            body: bodyInit,
-            signal: budget.signal,
-          })
+    let bodyInit = bodyBuffer as unknown as BodyInit
+    const bodyForRouting = routedBody ?? parsedBody
+    if (bodyForRouting) {
+      const routing = applyVisionRouting(bodyForRouting)
+      if (routing) {
+        upstreamModel = routing.upstreamModel
+        if (routing.rerouted || routing.imagesStripped) {
+          routedBody = routing.body
+          bodyInit = Buffer.from(JSON.stringify(routedBody)) as unknown as BodyInit
         }
       }
     }
+    if (routedBody) {
+      bodyInit = Buffer.from(JSON.stringify(routedBody)) as unknown as BodyInit
+    }
 
+    const ctx = { model, stream, upstreamUrl, t0: Date.now() }
+    log.info(
+      `-> POST ${stream ? "stream" : "no-stream"} model=${model}` +
+        (upstreamModel !== model ? ` → vision:${upstreamModel}` : ""),
+    )
+
+    const budget = idleBudget(UPSTREAM_IDLE_TIMEOUT_MS)
+
+    // Forward to DevEco and stream/passthrough the response back. The queue
+    // slot must be released on EVERY path that reached upstream, including
+    // fetch failures and the 401 retry — otherwise silent slot leaks build up.
     try {
+      const upstream = await fetch(upstreamUrl, {
+        method: "POST",
+        headers,
+        body: bodyInit,
+        signal: budget.signal,
+      }).catch((err) => {
+        throw new Error(`upstream fetch failed: ${String(err)}`)
+      })
+
+      // If DevEco says our token is bad/refresh needed, try one refresh+retry.
+      let responseToPipe = upstream
+      if (upstream.status === 401 && this.session) {
+        const jwtToken = await this.tokenStore.load()
+        if (jwtToken) {
+          const refreshed = await this.refreshAccessToken(jwtToken)
+          if (refreshed) {
+            accessToken = refreshed.accessToken
+            this.session.accessToken = refreshed.accessToken
+            this.session.refreshToken = refreshed.refreshToken
+            this.session.expiresAt = Date.now() + ACCESS_TOKEN_EXPIRES_MS
+            headers.Authorization = `Bearer ${refreshed.accessToken}`
+            log.warn("upstream 401 → refreshed token, retrying once")
+            budget.touch()
+            responseToPipe = await fetch(upstreamUrl, {
+              method: "POST",
+              headers,
+              body: bodyInit,
+              signal: budget.signal,
+            })
+          }
+        }
+      }
+
       await this.pipeResponse(responseToPipe, res, stream, ctx, budget.touch)
     } finally {
       budget.done()
-      this.exitQueue(convKey, chatId, model, accessToken)
+      this.exitQueue(convKey, chatId, upstreamModel, accessToken)
     }
   }
 
@@ -537,14 +656,17 @@ export class DevEcoProxy {
 
     // Transform Anthropic → OpenAI
     const openaiReq = anthropicToOpenaiChat(anthropicReq)
-    const openaiBody = JSON.stringify(openaiReq)
+    // Same vision fallback as the OpenAI path, applied to the transformed body.
+    const routing = applyVisionRouting(openaiReq as unknown as Record<string, unknown>)
+    const openaiBody = JSON.stringify(routing?.body ?? openaiReq)
+    const upstreamModel = routing?.upstreamModel ?? model
 
     const upstreamPath = isStream
       ? `${DEVECO_API_PREFIX}/chat/completions`
       : `${DEVECO_API_PREFIX}/no-stream/chat/completions`
     const upstreamUrl = `${DEVECO_ORIGIN}${upstreamPath}`
 
-    const convKey = conversationKey(anthropicReq)
+    const convKey = this.sessionKeyFromRequest(req) ?? conversationKey(anthropicReq)
     const chatId = this.chatIdFor(convKey)
     const headers: Record<string, string> = {
       Authorization: `Bearer ${accessToken}`,
@@ -557,12 +679,15 @@ export class DevEcoProxy {
     }
 
     const t0 = Date.now()
-    log.info(`-> POST anthropic/${isStream ? "stream" : "no-stream"} model=${model}`)
+    log.info(
+      `-> POST anthropic/${isStream ? "stream" : "no-stream"} model=${model}` +
+        (upstreamModel !== model ? ` → vision:${upstreamModel}` : ""),
+    )
 
     const budget = idleBudget(UPSTREAM_IDLE_TIMEOUT_MS)
     const finishTurn = () => {
       budget.done()
-      this.exitQueue(convKey, chatId, model, accessToken)
+      this.exitQueue(convKey, chatId, upstreamModel, accessToken)
     }
 
     let upstream: Response
@@ -573,6 +698,30 @@ export class DevEcoProxy {
         body: openaiBody,
         signal: budget.signal,
       })
+
+      // 401 retry — kept inside the same try so a retry fetch failure still
+      // releases the queue slot via the catch below.
+      if (upstream.status === 401 && this.session) {
+        const jwtToken = await this.tokenStore.load()
+        if (jwtToken) {
+          const refreshed = await this.refreshAccessToken(jwtToken)
+          if (refreshed) {
+            accessToken = refreshed.accessToken
+            this.session.accessToken = refreshed.accessToken
+            this.session.refreshToken = refreshed.refreshToken
+            this.session.expiresAt = Date.now() + ACCESS_TOKEN_EXPIRES_MS
+            headers.Authorization = `Bearer ${refreshed.accessToken}`
+            log.warn("anthropic upstream 401 → refreshed token, retrying once")
+            budget.touch()
+            upstream = await fetch(upstreamUrl, {
+              method: "POST",
+              headers,
+              body: openaiBody,
+              signal: budget.signal,
+            })
+          }
+        }
+      }
     } catch (err) {
       finishTurn()
       const msg = err instanceof Error ? err.message : String(err)
@@ -582,28 +731,6 @@ export class DevEcoProxy {
         type: "error",
         error: { type: "api_error", message: msg },
       }))
-    }
-
-    // 401 retry
-    if (upstream.status === 401 && this.session) {
-      const jwtToken = await this.tokenStore.load()
-      if (jwtToken) {
-        const refreshed = await this.refreshAccessToken(jwtToken)
-        if (refreshed) {
-          this.session.accessToken = refreshed.accessToken
-          this.session.refreshToken = refreshed.refreshToken
-          this.session.expiresAt = Date.now() + ACCESS_TOKEN_EXPIRES_MS
-          headers.Authorization = `Bearer ${refreshed.accessToken}`
-          log.warn("anthropic upstream 401 → refreshed token, retrying once")
-          budget.touch()
-          upstream = await fetch(upstreamUrl, {
-            method: "POST",
-            headers,
-            body: openaiBody,
-            signal: budget.signal,
-          })
-        }
-      }
     }
 
     if (!upstream.ok) {
@@ -705,6 +832,15 @@ export class DevEcoProxy {
         // handle()'s catch, which would try to write headers a second time and
         // take the whole process down with an unhandled rejection.
         log.error("upstream stream ended early", { error: String(err) })
+        // Leave OpenAI-compatible SSE clients a real error instead of a
+        // silently truncated stream. (The Anthropic transform already emits an
+        // `event: error` on its own path.)
+        if (stream) {
+          const msg = err instanceof Error ? err.message : String(err)
+          res.write(
+            `data: ${JSON.stringify({ error: { message: msg, type: "api_error" } })}\n\n`,
+          )
+        }
       }
     }
     res.end()
@@ -794,8 +930,21 @@ const isDirectRun = (() => {
 })()
 
 if (isDirectRun) {
+  function parsePort(value: string | undefined, source: string): number | undefined {
+    if (value === undefined) return undefined
+    const port = Number(value)
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+      log.error(`invalid ${source}: ${value}`)
+      process.exit(1)
+    }
+    return port
+  }
+
   const portArg = process.argv.find((a) => a.startsWith("--port="))
-  const port = portArg ? parseInt(portArg.split("=")[1], 10) : 17128
+  const port =
+    parsePort(portArg?.split("=")[1], "--port") ??
+    parsePort(process.env.DEVECO_PROXY_PORT, "DEVECO_PROXY_PORT") ??
+    17128
 
   let proxy: DevEcoProxy | null = null
 

@@ -19,6 +19,7 @@ import type { Hooks, Plugin, PluginInput } from "@opencode-ai/plugin"
 import {
   ACCESS_TOKEN_EXPIRES_MS,
   DEVECO_DEFAULTS,
+  DEVECO_EXIT_QUEUE_URL,
   OAUTH_DUMMY_KEY,
   PROVIDER_ID,
   type ProviderInfo,
@@ -27,7 +28,9 @@ import {
 import { createLoginService } from "./auth-login.js"
 import { JsonTokenStore } from "./token-store.js"
 import { getDevecoProviderConfig, resetModelCache } from "./models.js"
-import { DevEcoProxy } from "./proxy.js"
+import { DevEcoProxy, conversationKey } from "./proxy.js"
+import { applyVisionRouting } from "./vision-routing.js"
+import { normalizeOpenAIToolChoice } from "./openai-normalize.js"
 
 // Default local proxy port. Kept in sync with README and the standalone CLI.
 const PROXY_PORT = Number(process.env.DEVECO_PROXY_PORT) || 17128
@@ -40,6 +43,50 @@ const loginService = createLoginService(tokenStore)
 
 // Per-session Chat-Id map for the auth-loader fallback path.
 const sessionChatIdMap = new Map<string, string>()
+
+/** Release the upstream queue slot, matching proxy.ts semantics (one retry). */
+function exitQueue(key: string, chatId: string, model: string, token: string): void {
+  const url = `${DEVECO_EXIT_QUEUE_URL}?modelId=${encodeURIComponent(model)}`
+  const attempt = (retriesLeft: number): void => {
+    fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Session-Id": key,
+        "Chat-Id": chatId,
+        Authorization: `Bearer ${token}`,
+      },
+      signal: AbortSignal.timeout(5_000),
+    })
+      .then((r) => {
+        if (r.ok) log.debug(`exitSessionQueue -> ${r.status}`)
+        else if (retriesLeft > 0) {
+          log.warn(`exitSessionQueue -> HTTP ${r.status}, retrying`)
+          setTimeout(() => attempt(retriesLeft - 1), 500)
+        } else log.warn(`exitSessionQueue -> HTTP ${r.status}`)
+      })
+      .catch((err) => {
+        if (retriesLeft > 0) {
+          log.warn("exitSessionQueue failed, retrying", { error: String(err) })
+          setTimeout(() => attempt(retriesLeft - 1), 500)
+        } else log.warn("exitSessionQueue failed", { error: String(err) })
+      })
+  }
+  attempt(1)
+}
+
+/** True when the auth loader is still talking to our own local proxy. */
+function isProxyUrl(input: RequestInfo | URL): boolean {
+  try {
+    const u =
+      input instanceof URL
+        ? input
+        : new URL(typeof input === "string" ? input : (input as Request).url)
+    return u.hostname === PROXY_HOST || u.hostname === "localhost"
+  } catch {
+    return false
+  }
+}
 
 // Proxy lifecycle — started once on plugin load.
 let proxyStarted: Promise<DevEcoProxy> | null = null
@@ -162,22 +209,37 @@ function buildAuthedFetch(
     }
     if (current.access) headers.set("authorization", `Bearer ${current.access}`)
     headers.set("lang", "en")
-    const sessionId =
-      headers.get("x-deveco-session") || headers.get("x-session-affinity")
-    const chatId =
-      (sessionId && sessionChatIdMap.get(sessionId)) ||
-      crypto.randomUUID().replace(/-/g, "")
-    headers.set("Chat-Id", chatId)
-    if (sessionId) {
-      sessionChatIdMap.set(sessionId, chatId)
-      headers.set("Session-Id", sessionId)
-    }
 
     let finalInput: RequestInfo | URL = requestInput
+    let convKey = crypto.randomUUID().replace(/-/g, "")
+    let upstreamModel = ""
+    let streamBody = false
+    let bodyForFetch: string | undefined
+
     if (typeof init?.body === "string") {
       try {
-        const body = JSON.parse(init.body) as { stream?: unknown }
-        if (body?.stream !== true) {
+        const parsed = JSON.parse(init.body) as Record<string, unknown>
+        if (typeof parsed.model === "string") upstreamModel = parsed.model
+        if (parsed.stream === true) streamBody = true
+
+        const explicit =
+          headers.get("x-deveco-session") ||
+          headers.get("x-session-affinity") ||
+          headers.get("x-session-id")
+        convKey = explicit || conversationKey(parsed)
+
+        // Same DevEco quirks as the proxy: enum-only tool_choice and the
+        // transparent vision fallback.
+        const normalized = normalizeOpenAIToolChoice(parsed)
+        const routing = applyVisionRouting(normalized.body)
+        if (routing) {
+          upstreamModel = routing.upstreamModel
+          if (routing.rerouted || routing.imagesStripped || normalized.changed) {
+            bodyForFetch = JSON.stringify(routing.body)
+          }
+        }
+
+        if (!streamBody) {
           const url =
             requestInput instanceof URL
               ? new URL(requestInput.toString())
@@ -195,8 +257,52 @@ function buildAuthedFetch(
         /* ignore */
       }
     }
+
+    let chatId = sessionChatIdMap.get(convKey)
+    if (!chatId) {
+      chatId = crypto.randomUUID().replace(/-/g, "")
+      sessionChatIdMap.set(convKey, chatId)
+    }
+    headers.set("Chat-Id", chatId)
+    headers.set("Session-Id", convKey)
+
+    const initForFetch: RequestInit = { ...init, headers }
+    if (bodyForFetch !== undefined) initForFetch.body = bodyForFetch
+
     void getDevecoProviderConfig(current.access ?? "").catch(() => {})
-    return fetch(finalInput as RequestInfo, { ...init, headers })
+
+    const directToUpstream = !isProxyUrl(requestInput)
+    const token = current.access ?? ""
+    const release = () => exitQueue(convKey, chatId, upstreamModel, token)
+
+    let response: Response
+    try {
+      response = await fetch(finalInput as RequestInfo, initForFetch)
+    } catch (err) {
+      if (directToUpstream && upstreamModel) release()
+      throw err
+    }
+
+    if (!directToUpstream || !upstreamModel) return response
+
+    // For streams, release the queue slot only when the body has been fully
+    // consumed (or the client disconnects), matching the proxy's lifecycle.
+    if (streamBody && response.body) {
+      const wrapped = response.body.pipeThrough(
+        new TransformStream({
+          flush() {
+            release()
+          },
+        }),
+      )
+      return new Response(wrapped, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      })
+    }
+    release()
+    return response
   }
 }
 

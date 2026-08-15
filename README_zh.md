@@ -196,6 +196,37 @@ opencode run "say hi" -m deveco/GLM-5.1   # 通过代理发真实请求
 
 ---
 
+## 识图自动路由（GLM-5.1 的视觉补充）
+
+`GLM-5.1` 是文本模型，带图片的请求会被上游拒绝（HTTP 403）。代理内置了一层**透明识图转发**，无需修改 opencode 配置：
+
+- 请求模型是文本-only（默认 `GLM-5.1`）、且**最新一条用户消息含图片**时，代理自动改用视觉模型 `Qwen3_VL_235B_A22B_Instruct` 转发，响应原样返回，客户端无感知；
+- 下一轮没有新图片时自动回到 `GLM-5.1`，历史消息里的旧图片会被替换为 `[图片]` 占位符（上轮视觉模型得出的文字结论仍在历史里），避免文本模型再次报 403；
+- 转发到视觉模型时会移除 `tools` / `tool_choice` —— 该模型不输出结构化工具调用，直接以文字描述图片；
+- OpenAI 端点与 Anthropic 端点都适用，流式/非流式都支持。
+
+日志中可看到路由动作：
+
+```
+-> POST no-stream model=GLM-5.1 → vision:Qwen3_VL_235B_A22B_Instruct
+```
+
+覆盖默认值的环境变量：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `DEVECO_VISION_MODEL` | `Qwen3_VL_235B_A22B_Instruct` | 识图兜底模型 |
+| `DEVECO_TEXT_ONLY_MODELS` | `GLM-5.1` | 视为纯文本的模型，逗号分隔 |
+
+## 会话稳定性（避免“几轮后无响应”）
+
+DevEco 对短时间新建会话数量有限制（`UserSessionLimitExceeded`）。代理默认只用**第一条用户消息**作为会话 key（Chat-Id），因此 Claude Code 的 system 提示词即使每轮变化（日期、目录等动态内容），对话仍复用同一 Chat-Id，不会触发新建会话限流。
+
+- 客户端可显式传 `x-session-id` / `x-deveco-session` / `x-session-affinity` 头，优先级最高；
+- 需要恢复“system + 首条消息”的旧语义时，设置 `DEVECO_SESSION_KEY_MODE=system-first`。
+
+---
+
 ## Claude Code 集成
 
 代理同时支持 **Anthropic Messages API**（`POST /anthropic/v1/messages`），自动将请求转换为 OpenAI Chat Completions 格式。这让 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 可以直接使用 DevEco 模型。

@@ -156,6 +156,12 @@ export async function getDevecoProviderConfig(accessToken: string): Promise<Prov
   // Expired or missing — clear so a failed fetch doesn't return stale data forever.
   cachedConfig = null
 
+  // Keep this semantic intentionally: upstream puts the vision-only model
+  // (Qwen3_VL_...; tool_call: none) into task_default_model_map.blacklist, and
+  // applying that to the public list leaves GLM-5.1 as the only selectable
+  // model. GLM-5.1 is the only one that supports the full agent/tool loop; the
+  // hidden VL model is still used internally as the image fallback
+  // (src/vision-routing.ts), so no blacklist change is needed.
   const defaultBlacklist =
     DEVECO_DEFAULTS.taskDefaultModelMap.blacklist?.split(",") ?? []
 

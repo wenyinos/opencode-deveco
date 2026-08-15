@@ -38,6 +38,20 @@ export const DEVECO_MODEL_CONFIG_URL = `${DEVECO_BASE_URL}/codeGenie/modelConfig
 export const DEVECO_EXIT_QUEUE_URL = `${DEVECO_BASE_URL}/sse/codeGenie/exitSessionQueue`
 
 /**
+ * Vision fallback for text-only models. GLM-5.1 cannot consume images (the
+ * upstream request 403s with "Full inference timed out"), so the proxy
+ * transparently reroutes a turn whose *new* user message contains an image to
+ * this vision-capable model. Override with DEVECO_VISION_MODEL.
+ */
+export const DEVECO_VISION_FALLBACK_MODEL = "Qwen3_VL_235B_A22B_Instruct"
+
+/**
+ * Models that the proxy treats as text-only for the vision fallback above.
+ * Override with DEVECO_TEXT_ONLY_MODELS (comma-separated).
+ */
+export const DEVECO_TEXT_ONLY_MODELS = ["GLM-5.1"]
+
+/**
  * How long the upstream may stay *silent* before we give up.
  *
  * This is deliberately not a total-duration budget: a long agentic turn can

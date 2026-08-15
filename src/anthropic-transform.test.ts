@@ -84,7 +84,11 @@ describe("anthropicToOpenaiChat", () => {
 
   it("converts tool_choice", () => {
     expect(anthropicToOpenaiChat({ ...baseReq, tool_choice: { type: "auto" } }).tool_choice).toBe("auto")
-    expect(anthropicToOpenaiChat({ ...baseReq, tool_choice: { type: "any" } }).tool_choice).toBe("required")
+    expect(anthropicToOpenaiChat({
+      ...baseReq,
+      tool_choice: { type: "any" },
+      tools: [{ name: "bash", input_schema: {} }],
+    }).tool_choice).toBe("required")
     expect(anthropicToOpenaiChat({ ...baseReq, tool_choice: { type: "none" } }).tool_choice).toBe("none")
   })
 
@@ -103,6 +107,19 @@ describe("anthropicToOpenaiChat", () => {
     expect(result.tool_choice).toBe("required")
     expect(result.tools).toHaveLength(1)
     expect(result.tools![0].function.name).toBe("bash")
+  })
+
+  it("drops required tool_choice when the forced tool is not declared", () => {
+    const result = anthropicToOpenaiChat({
+      ...baseReq,
+      tool_choice: { type: "tool", name: "missing" },
+      tools: [
+        { name: "bash", description: "run", input_schema: {} },
+        { name: "read", description: "read", input_schema: {} },
+      ],
+    })
+    expect(result.tools).toHaveLength(0)
+    expect(result.tool_choice).toBeUndefined()
   })
 
   it("forwards max_tokens", () => {
@@ -146,6 +163,39 @@ describe("anthropicToOpenaiChat", () => {
     const toolMsg = result.messages.find((m) => m.role === "tool")!
     expect(toolMsg.tool_call_id).toBe("tc_1")
     expect(toolMsg.content).toBe("file1.txt\nfile2.txt")
+  })
+
+  it("preserves images inside tool_result content", () => {
+    const req: AnthropicRequest = {
+      ...baseReq,
+      messages: [
+        { role: "user", content: "看截图" },
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "tc_img", name: "screenshot", input: {} }],
+        },
+        {
+          role: "user",
+          content: [{
+            type: "tool_result",
+            tool_use_id: "tc_img",
+            content: [
+              { type: "text", text: "截图内容：" },
+              { type: "image", source: { type: "base64", media_type: "image/png", data: "QUJD" } },
+            ],
+          }],
+        },
+      ],
+    }
+    const result = anthropicToOpenaiChat(req)
+    const toolMsg = result.messages.find((m) => m.role === "tool")!
+    expect(Array.isArray(toolMsg.content)).toBe(true)
+    const content = toolMsg.content as Array<{ type: string; image_url?: { url: string }; text?: string }>
+    expect(content).toContainEqual({ type: "text", text: "截图内容：" })
+    expect(content).toContainEqual({
+      type: "image_url",
+      image_url: { url: "data:image/png;base64,QUJD" },
+    })
   })
 })
 
@@ -287,5 +337,46 @@ describe("openaiChatStreamToAnthropic", () => {
     await drain(openaiChatStreamToAnthropic(body, "m", () => pings++))
     // Two raw chunks — including the keep-alive that produces no client event.
     expect(pings).toBe(2)
+  })
+
+  it("reports prompt_tokens in message_start when the first chunk carries usage", async () => {
+    const encoder = new TextEncoder()
+    const first = `data: ${JSON.stringify({
+      id: "c1",
+      model: "m",
+      choices: [{ index: 0, delta: { content: "hi" }, finish_reason: null }],
+      usage: { prompt_tokens: 42, completion_tokens: 1 },
+    })}\n\n`
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(first))
+        controller.close()
+      },
+    })
+    const out = await drain(openaiChatStreamToAnthropic(body, "m"))
+    expect(out).toContain('"input_tokens":42')
+  })
+
+  it("reports cache_read_input_tokens in message_start when the upstream sends them", async () => {
+    const encoder = new TextEncoder()
+    const first = `data: ${JSON.stringify({
+      id: "c1",
+      model: "m",
+      choices: [{ index: 0, delta: { content: "hi" }, finish_reason: null }],
+      usage: {
+        prompt_tokens: 42,
+        completion_tokens: 1,
+        prompt_tokens_details: { cached_tokens: 30 },
+      },
+    })}\n\n`
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(first))
+        controller.close()
+      },
+    })
+    const out = await drain(openaiChatStreamToAnthropic(body, "m"))
+    expect(out).toContain('"input_tokens":12')
+    expect(out).toContain('"cache_read_input_tokens":30')
   })
 })
