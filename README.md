@@ -26,7 +26,7 @@ opencode  ──►  http://127.0.0.1:17128/v2  (this proxy)
 
 The proxy handles: Huawei OAuth login, access-token caching & 30-min refresh,
 header injection, and streaming/non-streaming forwarding. Verified end-to-end
-against opencode `1.17.6`.
+against opencode `1.17.6` and `1.18.x`.
 
 The opencode plugin (`src/plugin.ts`) is kept for forward-compatibility: on
 opencode versions that *do* load plugin auth, its `auth.loader` takes over and
@@ -44,7 +44,17 @@ the proxy isn't needed. On current opencode, **the proxy is the live path**.
 
 ## Setup
 
-### 1. Build
+### 1. Install
+
+**npm** (stable releases; includes the OS autostart scripts):
+
+```bash
+npm install -g opencode-deveco     # or: npm install opencode-deveco
+# the proxy lives at:  $(npm root -g)/opencode-deveco/dist/proxy.js
+# autostart scripts:   $(npm root -g)/opencode-deveco/scripts/
+```
+
+**From source** (development / bleeding edge):
 
 ```bash
 git clone <this-repo> opencode-deveco
@@ -54,6 +64,9 @@ npm run build          # produces dist/
 npm run test           # run tests
 npm run lint           # check code style
 ```
+
+Either way you need a `dist/proxy.js` to run and a `scripts/` folder with the
+OS autostart files — the npm package ships both.
 
 ### 2. Point opencode at the proxy
 
@@ -121,7 +134,8 @@ nohup node dist/proxy.js > proxy.log 2>&1 &
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cp scripts/opencode-deveco.service ~/.config/systemd/user/
+# npm install:  cp "$(npm root -g)/opencode-deveco/scripts/opencode-deveco.service" ~/.config/systemd/user/
+# from source:  cp scripts/opencode-deveco.service ~/.config/systemd/user/
 # edit ExecStart / WorkingDirectory in the copied file to your install path
 systemctl --user daemon-reload
 systemctl --user enable --now opencode-deveco
@@ -135,7 +149,8 @@ journalctl --user -u opencode-deveco -f   # follow logs
 
 ```bash
 mkdir -p ~/Library/LaunchAgents
-cp scripts/com.opencode-deveco.proxy.plist ~/Library/LaunchAgents/
+# npm install:  cp "$(npm root -g)/opencode-deveco/scripts/com.opencode-deveco.proxy.plist" ~/Library/LaunchAgents/
+# from source:  cp scripts/com.opencode-deveco.proxy.plist ~/Library/LaunchAgents/
 # edit the node / project / log paths in the copied file
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.opencode-deveco.proxy.plist
 tail -f ~/Library/Logs/opencode-deveco.log   # follow logs
@@ -310,8 +325,22 @@ behind each.
 - **Forced tool choice works** — `tool_choice: {"type":"tool"}` used to fail the
   whole request; DevEco only accepts the enum form.
 - **`max_tokens` is honoured** — it was silently dropped on the Anthropic path.
-- **Stable Chat-Id per conversation**, and the queue slot is released via
+- **Stable Chat-Id per conversation** — keyed on the conversation's *first user
+  message* (not `messages[0]`, which is the system prompt on the OpenAI wire
+  format), so a volatile system prompt (current time, cwd, …) can't mint a new
+  DevEco session every turn and trip the upstream session limit. Clients can
+  pin a session explicitly with `x-session-id` / `x-deveco-session` /
+  `x-session-affinity`, or opt into system-scoped keys with
+  `DEVECO_SESSION_KEY_MODE=system-first`. The queue slot is released via
   `exitSessionQueue` when a turn ends.
+- **Honest `logged_in`** — `/v2/status` reports `logged_in:true` as long as
+  credentials exist and can be silently refreshed, not only while the current
+  access token is unexpired (it expires every 30 minutes).
+- **Client disconnects release the upstream** — a dropped SSE/HTTP client
+  cancels the upstream read loop instead of draining the backend connection
+  into a dead pipe; graceful shutdown no longer hangs on long-lived streams
+  (5s grace, then force-close).
+- **Bounded request bodies** (128 MB) and `POST`-only chat forwarding.
 - **Non-blocking login** — `/v2/login` redirects immediately, and requests made
   while logged out fail fast with the login URL instead of hanging.
 - **Graceful shutdown**, **hourly model-list refresh**, **`fetch` everywhere**

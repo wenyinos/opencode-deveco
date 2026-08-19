@@ -20,7 +20,7 @@ opencode  ──►  http://127.0.0.1:17128/v2  （本代理）
               https://cn.devecostudio.huawei.com/sse/codeGenie/maas/v2
 ```
 
-代理负责：华为 OAuth 登录、access token 缓存与 30 分钟刷新、请求头注入、流式/非流式转发。已在 opencode `1.17.6` 上端到端验证通过。
+代理负责：华为 OAuth 登录、access token 缓存与 30 分钟刷新、请求头注入、流式/非流式转发。已在 opencode `1.17.6` 与 `1.18.x` 上端到端验证通过。
 
 opencode 插件（`src/plugin.ts`）保留作前向兼容：在**会**加载插件 auth 的 opencode 版本上，它的 `auth.loader` 会接管，代理就不需要了。在当前 opencode 上，**代理是真正的生效路径**。
 
@@ -36,7 +36,17 @@ opencode 插件（`src/plugin.ts`）保留作前向兼容：在**会**加载插�
 
 ## 安装步骤
 
-### 1. 构建
+### 1. 安装
+
+**npm 安装**（稳定版，自带各平台自启动脚本）：
+
+```bash
+npm install -g opencode-deveco     # 或：npm install opencode-deveco
+# 代理位于：  $(npm root -g)/opencode-deveco/dist/proxy.js
+# 自启动脚本：$(npm root -g)/opencode-deveco/scripts/
+```
+
+**源码安装**（开发 / 尝鲜）：
 
 ```bash
 git clone <this-repo> opencode-deveco
@@ -46,6 +56,8 @@ npm run build          # 生成 dist/
 npm run test           # 运行测试
 npm run lint           # 检查代码风格
 ```
+
+两种方式都会得到可运行的 `dist/proxy.js` 和含自启动文件的 `scripts/` 目录——npm 包两者都随包发布。
 
 ### 2. 让 opencode 指向代理
 
@@ -108,7 +120,8 @@ nohup node dist/proxy.js > proxy.log 2>&1 &
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cp scripts/opencode-deveco.service ~/.config/systemd/user/
+# npm 安装：  cp "$(npm root -g)/opencode-deveco/scripts/opencode-deveco.service" ~/.config/systemd/user/
+# 源码安装：  cp scripts/opencode-deveco.service ~/.config/systemd/user/
 # 编辑复制后的文件里的 ExecStart / WorkingDirectory 为你的实际安装路径
 systemctl --user daemon-reload
 systemctl --user enable --now opencode-deveco
@@ -121,7 +134,8 @@ journalctl --user -u opencode-deveco -f   # 实时看日志
 
 ```bash
 mkdir -p ~/Library/LaunchAgents
-cp scripts/com.opencode-deveco.proxy.plist ~/Library/LaunchAgents/
+# npm 安装：  cp "$(npm root -g)/opencode-deveco/scripts/com.opencode-deveco.proxy.plist" ~/Library/LaunchAgents/
+# 源码安装：  cp scripts/com.opencode-deveco.proxy.plist ~/Library/LaunchAgents/
 # 编辑复制后的文件里的 node / 项目 / 日志路径
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.opencode-deveco.proxy.plist
 tail -f ~/Library/Logs/opencode-deveco.log   # 实时看日志
@@ -298,7 +312,10 @@ Claude Code 长会话跑几轮就报错的问题，以及登录相关的修复�
 - **上游超时改为「空闲超时」** — 只有当 DevEco **连续沉默** 120 秒才中断，取代原来那个会误杀长对话的 60 秒总时长上限。流被中断时补发真正的 Anthropic `error` 事件，不再直接截断。
 - **强制指定工具可用了** — `tool_choice: {"type":"tool"}` 原本会让整个请求失败，DevEco 只接受枚举形式。
 - **`max_tokens` 会被遵守** — Anthropic 路径上原本静默丢弃了这个字段。
-- **Chat-Id 按对话保持稳定**，并在每轮结束时通过 `exitSessionQueue` 释放队列槽位。
+- **Chat-Id 按对话保持稳定** —— 会话 key 锚定对话的**第一条用户消息**（不是 `messages[0]`——OpenAI 线格式里那是 system 提示词），因此即使 system 提示词每轮变化（当前时间、工作目录等易变内容）也不会每轮新建 DevEco 会话、触发上游限流。客户端可用 `x-session-id` / `x-deveco-session` / `x-session-affinity` 显式固定会话，或用 `DEVECO_SESSION_KEY_MODE=system-first` 改为按 system 区分会话（OpenAI 的 system 消息与 Anthropic 的顶层 `system` 字段都识别）。每轮结束时通过 `exitSessionQueue` 释放队列槽位。
+- **`logged_in` 如实上报** —— `/v2/status` 只要凭证存在且可静默刷新就返回 `logged_in:true`，而不是只在当前 access token 未过期时（它每 30 分钟过期一次）。
+- **断连即释放上游** —— 客户端断开 SSE/HTTP 连接会取消上游读取循环，不再把后端连接抽进死管道；优雅关停也不再被长连接卡死（5 秒宽限后强制关闭）。
+- **请求体限 128 MB**，且 `/chat/completions` 仅接受 POST。
 - **登录不再阻塞** — `/v2/login` 立即返回重定向；未登录时发请求会快速失败并附上登录 URL，而不是一直挂着。
 - **优雅关停**、**模型列表每小时刷新**、**HTTP 统一走 `fetch`**（自定义 `HttpClient` 已删除）、**lint 与测试**，以及所有端点的 `/v2` 前缀均可省略。
 
