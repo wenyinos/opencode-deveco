@@ -104,10 +104,28 @@ export function conversationKey(body: unknown): string {
   try {
     const b = body as { system?: unknown; messages?: unknown[] }
     const mode = (process.env.DEVECO_SESSION_KEY_MODE || "first-message").toLowerCase()
+    const messages = b.messages ?? []
+    // The OpenAI wire format puts the system prompt at messages[0], and
+    // opencode's system prompt carries volatile content (current time, cwd…),
+    // so the stable anchor is the conversation's FIRST *user* message, not
+    // messages[0]. Anthropic requests keep `system` in its own field, so the
+    // first user message works for both wire formats.
+    const firstUserMessage =
+      messages.find(
+        (m): boolean => !!m && typeof m === "object" && (m as { role?: unknown }).role === "user",
+      ) ?? messages[0] ?? ""
+    // system-first mode keys on the system prompt too. Anthropic carries it in
+    // the top-level `system` field; OpenAI puts it in the first system message.
+    const systemMessage = messages.find(
+      (m): boolean => !!m && typeof m === "object" && (m as { role?: unknown }).role === "system",
+    ) as { content?: unknown } | undefined
+    const systemText =
+      (typeof b.system === "string" ? b.system : "") ||
+      (typeof systemMessage?.content === "string" ? systemMessage.content : "")
     const head =
       mode === "system-first"
-        ? JSON.stringify([b.system ?? "", b.messages?.[0] ?? ""])
-        : JSON.stringify(b.messages?.[0] ?? "")
+        ? JSON.stringify([systemText, firstUserMessage])
+        : JSON.stringify(firstUserMessage)
     return crypto.createHash("sha256").update(head).digest("hex").slice(0, 32)
   } catch {
     return crypto.randomUUID().replace(/-/g, "")
@@ -149,8 +167,6 @@ export class DevEcoProxy {
   // Explicit GET /v2/login is never throttled.
   private lastLoginTriggeredAt = 0
   private static readonly LOGIN_TRIGGER_COOLDOWN_MS = 5 * 60_000
-  // Track in-flight requests for graceful shutdown.
-  private readonly activeRequests = new Set<http.ServerResponse>()
 
   constructor(opts: ProxyOptions = {}) {
     this.port = opts.port ?? 17128
@@ -177,11 +193,23 @@ export class DevEcoProxy {
 
   async stop(): Promise<void> {
     if (!this.server) return
-    // Stop accepting new connections; wait for in-flight requests to finish.
-    await new Promise<void>((resolve) => this.server!.close(() => resolve()))
-    // HTTP keep-alive connections are otherwise allowed to hold shutdown open.
-    this.server.closeIdleConnections?.()
+    const server = this.server
     this.server = null
+    // Stop accepting new connections and wait briefly for in-flight requests.
+    // Long-lived SSE streams would otherwise hold close() open forever, so a
+    // short grace period is followed by a forced teardown of the rest.
+    await new Promise<void>((resolve) => {
+      const force = setTimeout(() => {
+        log.warn("graceful shutdown timed out; forcing remaining connections closed")
+        server.closeAllConnections?.()
+        resolve()
+      }, 5_000)
+      server.close(() => {
+        clearTimeout(force)
+        resolve()
+      })
+      server.closeIdleConnections?.()
+    })
   }
 
   getPort(): number {
@@ -262,12 +290,6 @@ export class DevEcoProxy {
         })
     }
     attempt(1) // one initial attempt + one retry
-  }
-
-  /** Track a response so stop() can wait for it to finish. */
-  private trackRequest(res: http.ServerResponse): void {
-    this.activeRequests.add(res)
-    res.on("finish", () => this.activeRequests.delete(res))
   }
 
   // ---------------------------------------------------------------------------
@@ -367,8 +389,8 @@ export class DevEcoProxy {
     }
 
     // Try refresh first (cheaper, headless).
-    if (this.session || (await this.tokenStore.load())) {
-      const jwtToken = await this.tokenStore.load()
+    const jwtToken = await this.tokenStore.load()
+    if (this.session || jwtToken) {
       if (jwtToken) {
         const refreshed = await this.refreshAccessToken(jwtToken)
         if (refreshed) {
@@ -413,7 +435,6 @@ export class DevEcoProxy {
   // ---------------------------------------------------------------------------
 
   private async handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    this.trackRequest(res)
     const host = req.headers.host || `${this.hostname}:${this.port}`
     const url = new URL(req.url ?? "/", `http://${host}`)
     // Normalise: strip /v2 prefix so all route checks are simple.
@@ -421,7 +442,12 @@ export class DevEcoProxy {
 
     try {
       if (p === "/status") {
-        const loggedIn = !!(this.session && this.session.expiresAt > Date.now())
+        // A stored jwtToken means the session is recoverable by a silent
+        // refresh, so report logged_in whenever credentials exist — not only
+        // while the current access token is unexpired (it expires every 30
+        // minutes and is refreshed headlessly on the next request).
+        const hasCredentials = (await this.tokenStore.load()) !== null
+        const loggedIn = !!this.session || hasCredentials
         return this.json(res, 200, {
           logged_in: loggedIn,
           user: this.session?.userInfo?.userName ?? null,
@@ -456,7 +482,7 @@ export class DevEcoProxy {
         return this.json(res, 200, { object: "list", data })
       }
 
-      if (p === "/chat/completions") {
+      if (p === "/chat/completions" && req.method === "POST") {
         return this.forwardChat(req, res)
       }
 
@@ -775,6 +801,8 @@ export class DevEcoProxy {
       void pump()
         .catch((err) => {
           log.error("anthropic stream pipe error", { error: String(err) })
+          // The client went away: stop draining the upstream into a dead pipe.
+          reader.cancel().catch(() => {})
           res.end()
         })
         .finally(finishTurn)
@@ -823,7 +851,10 @@ export class DevEcoProxy {
           res.write(value)
           if (ctx) {
             tailChunks.push(Buffer.from(value))
-            if (tailChunks.length > TAIL_KEEP) tailChunks.shift()
+            // SSE: only the tail carries usage, keep a few chunks. Non-stream:
+            // the whole response is one JSON document, keep it all so the
+            // usage parse below can see the complete body.
+            if (ctx.stream && tailChunks.length > TAIL_KEEP) tailChunks.shift()
           }
         }
       } catch (err) {
@@ -832,6 +863,9 @@ export class DevEcoProxy {
         // handle()'s catch, which would try to write headers a second time and
         // take the whole process down with an unhandled rejection.
         log.error("upstream stream ended early", { error: String(err) })
+        // Stop draining the upstream: the client is gone or the stream died,
+        // and leaving the reader active would leak the backend connection.
+        await reader.cancel().catch(() => {})
         // Leave OpenAI-compatible SSE clients a real error instead of a
         // silently truncated stream. (The Anthropic transform already emits an
         // `event: error` on its own path.)
@@ -891,7 +925,19 @@ export class DevEcoProxy {
   private readBody(req: http.IncomingMessage): Promise<Buffer> {
     return new Promise((resolve, reject) => {
       const chunks: Buffer[] = []
-      req.on("data", (c: Buffer) => chunks.push(c))
+      let size = 0
+      // Chat requests can carry base64 images, but a runaway client must not
+      // be able to exhaust the proxy's memory.
+      const MAX_BODY_BYTES = 128 * 1024 * 1024
+      req.on("data", (c: Buffer) => {
+        size += c.length
+        if (size > MAX_BODY_BYTES) {
+          reject(new Error(`request body exceeds ${MAX_BODY_BYTES} bytes`))
+          req.destroy()
+          return
+        }
+        chunks.push(c)
+      })
       req.on("end", () => resolve(Buffer.concat(chunks)))
       req.on("error", reject)
     })

@@ -260,6 +260,11 @@ function buildAuthedFetch(
 
     let chatId = sessionChatIdMap.get(convKey)
     if (!chatId) {
+      // Bound the map like the proxy's chatIdFor: a long-lived process would
+      // otherwise accumulate one entry per conversation forever.
+      if (sessionChatIdMap.size >= 500) {
+        sessionChatIdMap.delete(sessionChatIdMap.keys().next().value!)
+      }
       chatId = crypto.randomUUID().replace(/-/g, "")
       sessionChatIdMap.set(convKey, chatId)
     }

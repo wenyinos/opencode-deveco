@@ -477,14 +477,16 @@ export function openaiChatStreamToAnthropic(
   const decoder = new TextDecoder()
   let buffer = ""
   const state = createState(model)
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
 
   return new ReadableStream({
     async start(controller) {
-      const reader = upstream.getReader()
+      const r = upstream.getReader()
+      reader = r
 
       try {
         while (true) {
-          const { done, value } = await reader.read()
+          const { done, value } = await r.read()
           if (done) break
           // Signals liveness to the caller's idle watchdog. Must fire per raw
           // upstream chunk, not per emitted event: keep-alives and partial
@@ -523,28 +525,53 @@ export function openaiChatStreamToAnthropic(
         // stream here would leave the client with a truncated SSE and no clue
         // why, so close the open blocks and hand it a real Anthropic `error`
         // event, which every client surfaces as an actual message.
-        closeAllOpenBlocks(state)
-        flushQueue(state, controller, encoder)
-        controller.enqueue(
-          encoder.encode(
-            formatSse("error", {
-              type: "error",
-              error: {
-                type: "api_error",
-                message: `Upstream stream ended early: ${err instanceof Error ? err.message : String(err)}`,
-              },
-            }),
-          ),
-        )
-        controller.close()
+        emitError(state, controller, encoder, err)
         return
       }
 
-      finalizeStream(state)
-      flushQueue(state, controller, encoder)
-      controller.close()
+      // Both paths guard the emit: the consumer may have cancelled the stream
+      // mid-flight (client disconnect), in which case the controller is
+      // already closed and every enqueue would throw.
+      try {
+        finalizeStream(state)
+        flushQueue(state, controller, encoder)
+        controller.close()
+      } catch {
+        /* consumer already gone; nothing left to emit */
+      }
+    },
+    // The consumer went away (client disconnect). Cancel the upstream read
+    // loop so the backend connection isn't drained into a dead stream.
+    cancel() {
+      reader?.cancel().catch(() => {})
     },
   })
+}
+
+function emitError(
+  state: StreamState,
+  controller: ReadableStreamDefaultController,
+  encoder: TextEncoder,
+  err: unknown,
+): void {
+  try {
+    closeAllOpenBlocks(state)
+    flushQueue(state, controller, encoder)
+    controller.enqueue(
+      encoder.encode(
+        formatSse("error", {
+          type: "error",
+          error: {
+            type: "api_error",
+            message: `Upstream stream ended early: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        }),
+      ),
+    )
+    controller.close()
+  } catch {
+    /* consumer already gone; no output possible */
+  }
 }
 
 // ─── Stream internals ────────────────────────────────────────
@@ -651,6 +678,9 @@ function extractReasoning(delta: Record<string, unknown>): { thinking: string } 
 }
 
 function processChunk(chunk: OpenAIChatStreamChunk, state: StreamState): void {
+  // Keep the model the client asked for: message_start must report the
+  // requested id (e.g. GLM-5.1), not the backend's internal model name
+  // (GLM5_1_W4A8_PD-1.0.0) or a vision-rerouted fallback.
   const choice = chunk.choices?.[0]
 
   if (!choice) {
@@ -660,7 +690,6 @@ function processChunk(chunk: OpenAIChatStreamChunk, state: StreamState): void {
     return
   }
 
-  state.model = chunk.model || state.model
   ensureMessageStart(state, chunk.id, chunk.usage)
 
   const delta = choice.delta as Record<string, unknown>

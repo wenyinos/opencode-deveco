@@ -98,4 +98,26 @@ describe("JsonTokenStore", () => {
     expect(await new JsonTokenStore().load()).toBeNull()
     expect(fs.existsSync(file)).toBe(false)
   })
+
+  it("keeps the fresher legacy token when migration to canonical fails", async () => {
+    process.env.XDG_CONFIG_HOME = tmp
+    delete process.env.OPENCODE_CONFIG_DIR
+    const file = defaultTokenFilePath()
+    const legacy = legacyTokenFilePath()
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.mkdirSync(path.dirname(legacy), { recursive: true })
+    fs.writeFileSync(file, JSON.stringify({ jwt: "stale.stale.stale", savedAt: 1 }), { mode: 0o600 })
+    fs.writeFileSync(legacy, JSON.stringify({ jwt: JWT, savedAt: Date.now() }), { mode: 0o600 })
+
+    // Simulate an unwritable canonical location: save() fails, so the legacy
+    // copy must NOT be deleted and the newer token must still win.
+    class FailingSaveStore extends JsonTokenStore {
+      override async save(): Promise<boolean> {
+        return false
+      }
+    }
+    const store = new FailingSaveStore(file, legacy)
+    expect(await store.load()).toBe(JWT)
+    expect(fs.existsSync(legacy)).toBe(true)
+  })
 })

@@ -117,6 +117,11 @@ export class JsonTokenStore implements TokenStore {
         })
         return legacy.jwt
       }
+      // Migration failed (e.g. unwritable dir): never delete the fresher
+      // legacy token nor hand back a stale canonical one — prefer the newer
+      // token; the next successful save cleans the duplicate up.
+      log.warn("token-store: failed to migrate newer jwtToken, keeping legacy copy")
+      return legacy.jwt
     }
     if (canonical) {
       this.removeLegacyCopy()
