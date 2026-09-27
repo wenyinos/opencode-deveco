@@ -99,13 +99,24 @@ npm run lint           # 检查代码风格
 node dist/proxy.js
 ```
 
-**Windows —— 隐藏窗口后台进程**（无任务栏窗口；日志写入 `proxy.log`）：
+**带守护进程运行（推荐）**：`npm start` 在监督进程 `dist/daemon.js` 下运行代理，
+代理意外退出时自动重启（退避 1s → 2s → … → 最长 30s，稳定运行超过 60s 后退避重置），
+Ctrl+C 会一并停止两者。不需要守护时用 `npm run start:proxy` 直接跑代理。
+
+```bash
+npm start                     # 守护 + 代理（前台，日志到终端）
+npm start -- --port=17129     # 参数会透传给代理
+```
+
+**Windows —— 隐藏窗口后台进程**（无任务栏窗口；日志写入 `proxy.log`；同样带守护）：
 
 ```powershell
 # 在项目根目录执行
 powershell -ExecutionPolicy Bypass -File scripts\start-windows.ps1
-# 停止：
+# 停止（会先杀守护进程再杀代理）：
 powershell -ExecutionPolicy Bypass -File scripts\stop-windows.ps1
+# 不要守护时：
+powershell -ExecutionPolicy Bypass -File scripts\start-windows.ps1 -NoWatchdog
 ```
 
 > 开机自启：用任务计划程序（或在"启动"文件夹放一个快捷方式）运行 `start-windows.ps1`。
@@ -129,6 +140,7 @@ journalctl --user -u opencode-deveco -f   # 实时看日志
 ```
 
 > 这个 systemd unit 在用户登录时自启。要实现开机自启（登录前就启动）运行 `loginctl enable-linger $USER`。
+> systemd 自身就会重启进程（`Restart=on-failure`），所以这里继续直接运行 `dist/proxy.js`，不必再套一层 `daemon.js`。
 
 **macOS —— launchd 用户代理（自启 + 自动重启）：**
 
@@ -144,7 +156,8 @@ tail -f ~/Library/Logs/opencode-deveco.log   # 实时看日志
 
 > 必须用 LaunchAgent 而不是 LaunchDaemon —— agent 跑在你已登录的图形会话里，
 > 自动打开浏览器登录才能生效。launchd 不读 shell 配置且 `PATH` 极简，
-> 所以 plist 里要写 `node` 的绝对路径（用 `which node` 查）。
+> 所以 plist 里要写 `node` 的绝对路径（用 `which node` 查）。同样地，launchd
+> 自带 KeepAlive 重启，无需再套 `daemon.js`。
 
 ### 4. 登录
 
@@ -231,6 +244,9 @@ opencode run "say hi" -m deveco/GLM-5.1   # 通过代理发真实请求
 |---|---|---|
 | `DEVECO_VISION_MODEL` | `Qwen3_VL_235B_A22B_Instruct` | 识图兜底模型 |
 | `DEVECO_TEXT_ONLY_MODELS` | `GLM-5.1` | 视为纯文本的模型，逗号分隔 |
+| `DEVECO_MAX_CONCURRENCY` | `1` | 允许同时在跑的生成回合数，超出部分按到达顺序排队（默认串行）；元数据接口（`/status`、`/models`、`/login`、`/logout`）不参与排队 |
+| `DEVECO_QUEUE_COOLDOWN_SEC` | `1` | 排队请求被放行前的冷却秒数（可小数如 `0.5`）；直接拿到空闲槽位的请求立即发出、不冷却，设 `0` 关闭 |
+| `DEVECO_MAX_QUEUE` | `3` | 同时排队等待槽位的请求数上限，超出的请求立刻返回 429（`rate_limit_error`）而不是继续堆积；设 `0` 表示不排队（没有空闲槽位即 429） |
 
 ## 会话稳定性（避免“几轮后无响应”）
 
@@ -238,6 +254,25 @@ DevEco 对短时间新建会话数量有限制（`UserSessionLimitExceeded`）�
 
 - 客户端可显式传 `x-session-id` / `x-deveco-session` / `x-session-affinity` 头，优先级最高；
 - 需要恢复“system + 首条消息”的旧语义时，设置 `DEVECO_SESSION_KEY_MODE=system-first`。
+
+---
+
+## 上下文长度实测（2026-09-17）
+
+用 **needle-in-haystack** 探针实测各模型真实可用的上下文：把随机暗号埋在长文约 30% 处、要求原样回读，并以响应里的 `usage.prompt_tokens`（上游真实计数）为准，从约 2.5K tokens 起逐级放大：
+
+| 模型 | 上游声明 `context_window` | 实测通过 | 实测被拒 | 结论 |
+|---|---|---|---|---|
+| `deepseek-v4-flash` | 未声明（不在模型表中） | 1,042,769 tokens（约 85 s） | 1,044,994 → `400 OverLimitRequestBody` | 硬上限 **1,044,480** tokens（≈1020K） |
+| `GLM-5.3` | 170,000 | 198,197 tokens（116 s） | 209,880 → `403 ModelServiceError` | 有效 **≈200K** |
+| `GLM-5.1` | 170,000 | 198,192 tokens（49 s） | 204,110 → `403 ModelServiceError` | 有效 **≈200K** |
+
+- **`deepseek-v4-flash` 是明确的硬限制**，上游报错会直接给出数字：`the prompt length 1044994 must less than the maximum input length 1044480`。超限即 `400`，边界干净。
+- **GLM-5.x 的拒绝不是长度报错**，而是 `403 ModelServiceError`：`Built-in model service is currently overloaded` / `Full inference timed out`（约 35 s 快速拒绝，不是真的跑满超时）。198K 稳定通过、204K 起稳定被拒，所以 ≈200K 是**观测量**而不是上游声明的限制；实际使用建议留余量（GLM-5.1 按 ~190K、GLM-5.3 按 ~180K 更稳，后者在 198K 时单次要 116 s）。
+- 同一段文本 GLM 的分词更省（约 1.17 tokens/词 vs deepseek 的 1.23），但可用容量仍差一个数量级。
+- **`deepseek-v4-flash` 是隐藏模型**：既不在 `GET /v2/models`，也不在上游 `modelConfig` 里（后者只有 `GLM-5.3` / `GLM-5.1` / `Qwen3_VL_235B_A22B_Instruct`）。靠模型列表自动拉取的客户端看不到它，必须手写模型名。
+- 压测期间代理**未崩溃**：单请求 body 约 4 MB、连续 50+ 次调用都拿到正常 HTTP 响应；唯一一次 5xx 是并行发两个大请求时上游断连（`upstream fetch failed`），代理返回 `500` 后继续服务。
+- 复现方法：以 `usage.prompt_tokens` 为准从 2K 起按约 1.25 倍递增，直到被拒；把暗号挪到接近结尾（如 90% 处）可额外验证尾部是否被完整读取。
 
 ---
 
@@ -314,7 +349,11 @@ Claude Code 长会话跑几轮就报错的问题，以及登录相关的修复�
 - **`max_tokens` 会被遵守** — Anthropic 路径上原本静默丢弃了这个字段。
 - **Chat-Id 按对话保持稳定** —— 会话 key 锚定对话的**第一条用户消息**（不是 `messages[0]`——OpenAI 线格式里那是 system 提示词），因此即使 system 提示词每轮变化（当前时间、工作目录等易变内容）也不会每轮新建 DevEco 会话、触发上游限流。客户端可用 `x-session-id` / `x-deveco-session` / `x-session-affinity` 显式固定会话，或用 `DEVECO_SESSION_KEY_MODE=system-first` 改为按 system 区分会话（OpenAI 的 system 消息与 Anthropic 的顶层 `system` 字段都识别）。每轮结束时通过 `exitSessionQueue` 释放队列槽位。
 - **`logged_in` 如实上报** —— `/v2/status` 只要凭证存在且可静默刷新就返回 `logged_in:true`，而不是只在当前 access token 未过期时（它每 30 分钟过期一次）。
-- **断连即释放上游** —— 客户端断开 SSE/HTTP 连接会取消上游读取循环，不再把后端连接抽进死管道；优雅关停也不再被长连接卡死（5 秒宽限后强制关闭）。
+- **断连即释放上游** —— 客户端断开 SSE/HTTP 连接会取消上游读取循环，不再把后端连接抽进死管道；排队等待期间就离开的客户端会被直接移出队列（不会启动上游轮次，也不再让后面的请求白付一次冷却）；优雅关停也不再被长连接卡死（5 秒宽限后强制关闭）。
+- **生成回合串行执行** —— `DEVECO_MAX_CONCURRENCY`（默认 `1`）限制同时在跑的上游生成回合数，突发请求按到达顺序排队，而不是去撞 DevEco 的按账号限流。
+- **排队请求有冷却** —— `DEVECO_QUEUE_COOLDOWN_SEC`（默认 `1`，可小数如 `0.5`；设 `0` 关闭）会在放行一个排队请求前暂停相应秒数，避免相邻回合连击后端。直接拿到空闲槽位的请求立即发出，且正在冷却的槽位保留给该排队者，后来者无法插队。
+- **队列有长度上限** —— 最多 `DEVECO_MAX_QUEUE`（默认 `3`）个请求在等待槽位，再多就直接回 429（`rate_limit_error`），不会在长回合后面堆成看不到头的积压；设 `0` 表示不排队，没有空闲槽位即 429。被拒的请求不占槽位，也不影响队列里已有的请求。
+- **回合交接干净** —— 一轮结束后，只有等 DevEco 确认服务端队列槽位已释放（`exitSessionQueue`）才把槽位交给下一个排队回合，等待上限 3 秒，防止释放调用卡死拖住整个队列。元数据接口（`/v2/status`、`/v2/models`、`/v2/login`、`/v2/logout`）完全不排队：它们是读取，不是生成。
 - **请求体限 128 MB**，且 `/chat/completions` 仅接受 POST。
 - **登录不再阻塞** — `/v2/login` 立即返回重定向；未登录时发请求会快速失败并附上登录 URL，而不是一直挂着。
 - **优雅关停**、**模型列表每小时刷新**、**HTTP 统一走 `fetch`**（自定义 `HttpClient` 已删除）、**lint 与测试**，以及所有端点的 `/v2` 前缀均可省略。

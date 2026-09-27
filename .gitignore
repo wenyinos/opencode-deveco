@@ -10,6 +10,9 @@ dist/
 proxy.log*
 npm-debug.log*
 
+# runtime pid files
+*.pid
+
 # os / editor
 .DS_Store
 Thumbs.db

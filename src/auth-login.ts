@@ -196,7 +196,17 @@ class LocalAuthServer {
 
   private tryPort(port: number): Promise<number> {
     return new Promise((resolve, reject) => {
-      const server = http.createServer((req, res) => this.handleRequest(req, res))
+      const server = http.createServer((req, res) => {
+        // A browser that closes the tab mid-callback would otherwise surface as
+        // an uncaught socket 'error' and take the whole proxy down with it.
+        req.on("error", (err: Error) =>
+          log.debug("local auth server: request socket error", { error: String(err) }),
+        )
+        res.on("error", (err: Error) =>
+          log.debug("local auth server: response socket error", { error: String(err) }),
+        )
+        this.handleRequest(req, res)
+      })
       server.on("error", (err: NodeJS.ErrnoException) => {
         if (err.code === "EADDRINUSE") reject(new Error("Port is already in use"))
         else reject(err)

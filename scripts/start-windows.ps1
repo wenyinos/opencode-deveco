@@ -1,27 +1,38 @@
 # Start the opencode-deveco proxy as a hidden background process on Windows.
 #
-# Usage (from the project root, or pass the dist path):
+# By default the proxy runs under its supervisor (dist/daemon.js), so a crash
+# is restarted automatically; -NoWatchdog runs dist/proxy.js directly (the same
+# as `npm run start:proxy`).
+#
+# Usage (from the project root, or pass the entry path):
 #   powershell -ExecutionPolicy Bypass -File scripts\start-windows.ps1
-#   powershell -ExecutionPolicy Bypass -File scripts\start-windows.ps1 -ProxyJs dist\proxy.js
+#   powershell -ExecutionPolicy Bypass -File scripts\start-windows.ps1 -NoWatchdog
+#   powershell -ExecutionPolicy Bypass -File scripts\start-windows.ps1 -EntryJs dist\proxy.js
 #
 # The process runs with no visible window (WindowStyle Hidden). Logs go to
-# proxy.log in the project root (or -LogFile). To stop it, kill the node
-# process listening on the proxy port (see stop-windows.ps1).
+# proxy.log in the project root (or -LogFile). Stop it with stop-windows.ps1,
+# which kills the supervisor first — killing only the proxy would have the
+# supervisor restart it.
 
 param(
-  [string]$ProxyJs = "dist\proxy.js",
+  [string]$EntryJs = "",
   [string]$LogFile = "proxy.log",
-  [int]$Port = 17128
+  [int]$Port = 17128,
+  [switch]$NoWatchdog
 )
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
-$ProxyPath = Join-Path $ProjectRoot $ProxyJs
+
+if (-not $EntryJs) {
+  $EntryJs = if ($NoWatchdog) { "dist\proxy.js" } else { "dist\daemon.js" }
+}
+$EntryPath = Join-Path $ProjectRoot $EntryJs
 $LogPath = Join-Path $ProjectRoot $LogFile
 
-if (-not (Test-Path $ProxyPath)) {
-  Write-Error "Proxy not found at $ProxyPath. Run 'npm run build' first."
+if (-not (Test-Path $EntryPath)) {
+  Write-Error "Entry point not found at $EntryPath. Run 'npm run build' first."
   exit 1
 }
 
@@ -36,8 +47,11 @@ if ($existing) {
 
 # Start hidden. -WindowStyle Hidden = no window at all.
 $env:DEVECO_PROXY_PORT = "$Port"
+# The argument is quoted by hand: Start-Process does not quote a single
+# -ArgumentList value, so a project path containing a space would be split and
+# node would be handed a truncated module path.
 $proc = Start-Process -FilePath "node" `
-  -ArgumentList $ProxyPath `
+  -ArgumentList "`"$EntryPath`"" `
   -WorkingDirectory $ProjectRoot `
   -WindowStyle Hidden `
   -RedirectStandardOutput $LogPath `
@@ -49,7 +63,8 @@ Start-Sleep -Seconds 2
 # Verify it came up.
 $check = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
 if ($check) {
-  Write-Host "Proxy started (PID $($proc.Id), no window)."
+  $mode = if ($NoWatchdog) { "no watchdog" } else { "supervised" }
+  Write-Host "Proxy started (PID $($proc.Id), $mode, no window)."
   Write-Host "  Port: $Port"
   Write-Host "  Logs: $LogPath  (and $LogPath.err)"
   $status = Invoke-RestMethod "http://127.0.0.1:$Port/v2/status" -ErrorAction SilentlyContinue

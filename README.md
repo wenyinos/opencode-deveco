@@ -112,13 +112,26 @@ The proxy listens on `127.0.0.1:17128` by default. Override with
 node dist/proxy.js
 ```
 
-**Windows — hidden background process** (no taskbar window; logs → `proxy.log`):
+**Supervised (recommended)** — `npm start` runs the proxy under the supervisor
+`dist/daemon.js`, which relaunches it whenever it exits (backoff 1s → 2s → …
+capped at 30s, reset after a run that survived 60s). Ctrl+C stops both. Use
+`npm run start:proxy` to run the proxy alone.
+
+```bash
+npm start                     # supervisor + proxy (foreground, logs to terminal)
+npm start -- --port=17129     # arguments are passed through to the proxy
+```
+
+**Windows — hidden background process** (no taskbar window; logs → `proxy.log`;
+supervised as well):
 
 ```powershell
 # from the project root
 powershell -ExecutionPolicy Bypass -File scripts\start-windows.ps1
-# stop it later:
+# stop it later (kills the supervisor first, then the proxy):
 powershell -ExecutionPolicy Bypass -File scripts\stop-windows.ps1
+# without the watchdog:
+powershell -ExecutionPolicy Bypass -File scripts\start-windows.ps1 -NoWatchdog
 ```
 
 > For autostart on login: create a Task Scheduler task (or a shortcut in the
@@ -143,7 +156,9 @@ journalctl --user -u opencode-deveco -f   # follow logs
 ```
 
 > The systemd unit enables lingering-free autostart on login. For boot-time
-> autostart (before login) run `loginctl enable-linger $USER`.
+> autostart (before login) run `loginctl enable-linger $USER`. systemd already
+> restarts the process (`Restart=on-failure`), so keep running `dist/proxy.js`
+> here — no need to stack `daemon.js` on top.
 
 **macOS — launchd user agent (autostart + auto-restart):**
 
@@ -226,6 +241,44 @@ opencode run "say hi" -m deveco/GLM-5.1 # real request through the proxy
 | `GET  /v2/logout` | clear stored credentials |
 
 > All endpoints also work without the `/v2` prefix (e.g. `GET /status`).
+
+---
+
+## Measured context limits (2026-09-17)
+
+Measured with a **needle-in-haystack** probe: a random code buried ~30% into a
+long filler prompt and asked back verbatim. `usage.prompt_tokens` from the
+response is the authoritative upstream count; sizes start at ~2.5K tokens and
+grow ~1.25× per step.
+
+| Model | Declared `context_window` | Measured pass | Measured reject | Verdict |
+|---|---|---|---|---|
+| `deepseek-v4-flash` | not declared (absent from the model list) | 1,042,769 tokens (~85 s) | 1,044,994 → `400 OverLimitRequestBody` | hard cap **1,044,480** tokens (≈1020K) |
+| `GLM-5.3` | 170,000 | 198,197 tokens (116 s) | 209,880 → `403 ModelServiceError` | effective **≈200K** |
+| `GLM-5.1` | 170,000 | 198,192 tokens (49 s) | 204,110 → `403 ModelServiceError` | effective **≈200K** |
+
+- **`deepseek-v4-flash` enforces a hard cap** and names it in the error:
+  `the prompt length 1044994 must less than the maximum input length 1044480`.
+  Crossing the line is a plain `400`, so the boundary is crisp.
+- **GLM-5.x reports no length error.** It answers `403 ModelServiceError`
+  (`Built-in model service is currently overloaded` / `Full inference timed
+  out`) after ~35 s — a fast rejection, not a genuine timeout. 198K passes
+  consistently, 204K and above fails consistently, so ≈200K is an **observed**
+  ceiling rather than a declared one. Leave headroom in practice (~190K for
+  GLM-5.1, ~180K for GLM-5.3 — the latter already takes 116 s at 198K).
+- GLM tokenizes the same text more cheaply (~1.17 tokens/word vs deepseek's
+  1.23), yet its usable window is an order of magnitude smaller.
+- **`deepseek-v4-flash` is a hidden model**: it appears neither in
+  `GET /v2/models` nor in the upstream `modelConfig` (which only lists
+  `GLM-5.3` / `GLM-5.1` / `Qwen3_VL_235B_A22B_Instruct`). Clients that build
+  their model list dynamically will not see it — pin the model name by hand.
+- **The proxy did not crash under this load**: 50+ calls with single request
+  bodies of ~4 MB all returned normal HTTP responses; the only 5xx came from an
+  upstream disconnect while two huge requests ran in parallel
+  (`upstream fetch failed`), and the proxy answered `500` and kept serving.
+- To reproduce: trust `usage.prompt_tokens`, start at 2K and grow ~1.25× per
+  step until rejected; moving the needle toward the end (~90%) additionally
+  checks that the tail is read in full.
 
 ---
 
@@ -338,8 +391,30 @@ behind each.
   access token is unexpired (it expires every 30 minutes).
 - **Client disconnects release the upstream** — a dropped SSE/HTTP client
   cancels the upstream read loop instead of draining the backend connection
-  into a dead pipe; graceful shutdown no longer hangs on long-lived streams
-  (5s grace, then force-close).
+  into a dead pipe, and a client that leaves while its request is still queued
+  is dropped from the queue (no upstream turn at all, and no cooldown charged to
+  the requests behind it); graceful shutdown no longer hangs on long-lived
+  streams (5s grace, then force-close).
+- **Turns run one at a time** — `DEVECO_MAX_CONCURRENCY` (default `1`) caps how
+  many upstream generations may run at once, so a burst queues in arrival order
+  instead of tripping DevEco's per-account throttle.
+- **Queued requests can cool down** — `DEVECO_QUEUE_COOLDOWN_SEC` (default `1`,
+  fractions allowed; `0` switches it off) pauses that many seconds before a
+  request that had to queue is admitted, so burst-adjacent turns don't hit the
+  backend back-to-back. A request that finds a free slot still starts
+  immediately, and the cooling slot stays reserved for the waiter so a
+  latecomer can't take it.
+- **The queue is bounded** — at most `DEVECO_MAX_QUEUE` (default `3`) requests
+  may wait for a slot; anything beyond that is refused on the spot with `429`
+  (`rate_limit_error`) instead of stacking up behind a long turn, so a burst
+  can't become an endless backlog. `0` means "never queue": no free slot, no
+  waiting. A refused request takes no slot and doesn't disturb the waiters
+  already queued.
+- **Turns hand over cleanly** — a finished turn's slot is passed to the next
+  queued turn only once DevEco confirms the server-side queue slot is released
+  (`exitSessionQueue`), capped at 3s so a wedged release call can't stall the
+  queue. Metadata endpoints (`/v2/status`, `/v2/models`, `/v2/login`,
+  `/v2/logout`) never queue at all: they are reads, not generations.
 - **Bounded request bodies** (128 MB) and `POST`-only chat forwarding.
 - **Non-blocking login** — `/v2/login` redirects immediately, and requests made
   while logged out fail fast with the login URL instead of hanging.

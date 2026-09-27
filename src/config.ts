@@ -60,6 +60,69 @@ export const DEVECO_TEXT_ONLY_MODELS = ["GLM-5.1"]
  */
 export const UPSTREAM_IDLE_TIMEOUT_MS = 120_000
 
+/**
+ * How long a finished turn waits for DevEco to confirm its server-side queue
+ * slot release (exitSessionQueue) before the concurrency slot is handed to the
+ * next request. Waiting is the point — the next turn must not start against a
+ * slot that is still leased upstream — but a wedged release call must not stall
+ * the queue either, so the wait is capped and the retry chain finishes in the
+ * background.
+ */
+export const EXIT_QUEUE_GRACE_MS = 3_000
+
+/**
+ * How many upstream requests may be in flight at once. DevEco throttles bursts
+ * per account, so the default is one at a time and latecomers queue instead of
+ * failing. Override with DEVECO_MAX_CONCURRENCY.
+ */
+export const DEVECO_MAX_CONCURRENCY = 1
+
+/** Resolve the concurrency cap, ignoring a missing or invalid override. */
+export function maxConcurrency(): number {
+  const raw = Number(process.env.DEVECO_MAX_CONCURRENCY)
+  return Number.isInteger(raw) && raw >= 1 ? raw : DEVECO_MAX_CONCURRENCY
+}
+
+/**
+ * How many requests may wait for a slot at once. Anything beyond that is
+ * refused with HTTP 429 instead of queued: an unbounded queue turns a burst
+ * into an ever-growing backlog whose symptom is "the client just hangs",
+ * whereas a refusal lets the caller back off and retry. 0 = never queue
+ * (a request is refused as soon as no slot is free). Override with
+ * DEVECO_MAX_QUEUE.
+ */
+export const DEVECO_MAX_QUEUE = 3
+
+/** Resolve the queue length cap; a missing or invalid override means default. */
+export function maxQueue(): number {
+  const raw = process.env.DEVECO_MAX_QUEUE
+  if (raw === undefined || raw.trim() === "") return DEVECO_MAX_QUEUE
+  const n = Number(raw)
+  return Number.isInteger(n) && n >= 0 ? n : DEVECO_MAX_QUEUE
+}
+
+/**
+ * Seconds to pause before admitting a request that had to queue, giving DevEco
+ * a breather between burst-adjacent turns. Only queued requests pay it: one
+ * that finds a free slot starts immediately. Override with
+ * DEVECO_QUEUE_COOLDOWN_SEC (fractions allowed, e.g. 0.5); 0 switches the pause
+ * off.
+ */
+export const DEVECO_QUEUE_COOLDOWN_SEC = 1
+
+/**
+ * Resolve the queued-request cooldown in ms. An explicit 0 disables the pause;
+ * a missing or unparseable value falls back to the default.
+ */
+export function queueCooldownMs(): number {
+  const raw = process.env.DEVECO_QUEUE_COOLDOWN_SEC
+  if (raw === undefined || raw.trim() === "") return DEVECO_QUEUE_COOLDOWN_SEC * 1000
+  const sec = Number(raw)
+  return Number.isFinite(sec) && sec >= 0
+    ? Math.round(sec * 1000)
+    : DEVECO_QUEUE_COOLDOWN_SEC * 1000
+}
+
 /** accessToken lifetime in ms (30 min, matching deveco-code). */
 export const ACCESS_TOKEN_EXPIRES_MS = 30 * 60 * 1000
 

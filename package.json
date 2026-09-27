@@ -19,6 +19,8 @@
     "opencode": ">=1.0.0"
   },
   "scripts": {
+    "start": "node dist/daemon.js",
+    "start:proxy": "node dist/proxy.js",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
