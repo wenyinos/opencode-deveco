@@ -191,6 +191,30 @@ export function getTaskDefaultModelMap(): Record<string, string> {
   return cachedTaskDefaultModelMap ?? DEVECO_DEFAULTS.taskDefaultModelMap
 }
 
+/**
+ * Model ids the upstream declares as text-input-only, derived from the cached
+ * model config — `input_modalities` is the authoritative answer, so a model the
+ * upstream adds (or whose modalities change) is classified correctly without a
+ * code change.
+ *
+ * Returns null when no config is cached (cold start, offline, not logged in),
+ * which tells the caller to fall back to its static list. A cached config wins
+ * even when it yields an empty set: "no text-only models" is then the
+ * upstream's own statement, not a gap to fill in.
+ */
+export function textOnlyModelsFromConfig(): Set<string> | null {
+  const models = cachedConfig?.models
+  if (!models) return null
+  const ids = new Set<string>()
+  for (const [id, info] of Object.entries(models)) {
+    const input = info.modalities?.input
+    if (Array.isArray(input) && input.length > 0 && !input.includes("image")) {
+      ids.add(id)
+    }
+  }
+  return ids
+}
+
 /** Reset caches (used when the user re-logs in). */
 export function resetModelCache(): void {
   cachedConfig = null

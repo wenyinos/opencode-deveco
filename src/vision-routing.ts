@@ -1,8 +1,8 @@
-// Transparent image fallback: GLM-5.1 (and any model listed in
-// DEVECO_TEXT_ONLY_MODELS) cannot consume image content — DevEco rejects such
-// requests with HTTP 403 / "Full inference timed out". This module decides, per
-// request, whether the turn must be rerouted to the vision-capable model, and
-// rewrites the OpenAI-shaped body accordingly.
+// Transparent image fallback: models the upstream declares as text-input-only
+// (plus anything named in DEVECO_TEXT_ONLY_MODELS) cannot consume image content
+// — DevEco rejects such requests with HTTP 403 / "Full inference timed out".
+// This module decides, per request, whether the turn must be rerouted to the
+// vision-capable model, and rewrites the OpenAI-shaped body accordingly.
 //
 // Rules (applied to the OpenAI wire shape, i.e. after the Anthropic transform
 // has already run for /anthropic/v1/messages):
@@ -19,6 +19,7 @@ import {
   DEVECO_TEXT_ONLY_MODELS,
   DEVECO_VISION_FALLBACK_MODEL,
 } from "./config.js"
+import { textOnlyModelsFromConfig } from "./models.js"
 
 export interface ImageRoutingResult {
   /** The body to send upstream (same object when nothing changed). */
@@ -48,14 +49,28 @@ export function visionModelId(): string {
   return process.env.DEVECO_VISION_MODEL || DEVECO_VISION_FALLBACK_MODEL
 }
 
+/**
+ * Models treated as unable to consume images. In order of precedence:
+ *
+ *   1. `DEVECO_TEXT_ONLY_MODELS`, when set — an explicit operator override;
+ *   2. the upstream model config's `input_modalities`, once cached — the
+ *      authoritative answer, so a model the upstream adds or changes needs no
+ *      code change here;
+ *   3. `DEVECO_TEXT_ONLY_MODELS` the constant — only while no config is cached
+ *      (cold start, offline, not logged in), where guessing beats rerouting
+ *      nothing.
+ */
 export function textOnlyModelIds(): Set<string> {
-  const raw = process.env.DEVECO_TEXT_ONLY_MODELS || DEVECO_TEXT_ONLY_MODELS.join(",")
-  return new Set(
-    raw
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean),
-  )
+  const override = process.env.DEVECO_TEXT_ONLY_MODELS
+  if (override !== undefined && override.trim() !== "") {
+    return new Set(
+      override
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    )
+  }
+  return textOnlyModelsFromConfig() ?? new Set(DEVECO_TEXT_ONLY_MODELS)
 }
 
 function contentParts(msg: OpenAIMessageLike | undefined): OpenAIContentPart[] {

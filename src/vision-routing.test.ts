@@ -5,7 +5,9 @@ import {
   currentTurnHasImage,
   newestUserMessageHasImage,
   stripImages,
+  textOnlyModelIds,
 } from "./vision-routing.js"
+import { getDevecoProviderConfig, resetModelCache } from "./models.js"
 
 const OLD_VISION_MODEL = process.env.DEVECO_VISION_MODEL
 const OLD_TEXT_ONLY = process.env.DEVECO_TEXT_ONLY_MODELS
@@ -111,6 +113,53 @@ describe("vision routing", () => {
 
   it("returns null when the body has no model", () => {
     expect(applyVisionRouting({ messages: [{ role: "user", content: [imagePart()] }] })).toBeNull()
+  })
+
+  it("trusts the cached upstream config over the static fallback", async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          code: 200,
+          body: {
+            inner_models: [
+              {
+                model_configs: [
+                  // The upstream now says GLM-5.1 takes images: the static
+                  // fallback must lose to that.
+                  { model_id: "GLM-5.1", input_modalities: ["text", "image"] },
+                  // A model nobody hardcoded: picked up on its own.
+                  { model_id: "GLM-6.0", input_modalities: ["text"] },
+                ],
+              },
+            ],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      )) as typeof fetch
+
+    try {
+      await getDevecoProviderConfig("mock-token")
+      const ids = textOnlyModelIds()
+      expect(ids.has("GLM-6.0")).toBe(true)
+      expect(ids.has("GLM-5.1")).toBe(false)
+
+      const r = applyVisionRouting({
+        model: "GLM-5.1",
+        messages: [{ role: "user", content: [{ type: "text", text: "看图" }, imagePart()] }],
+      })!
+      expect(r.rerouted).toBe(false)
+    } finally {
+      globalThis.fetch = originalFetch
+      resetModelCache()
+    }
+  })
+
+  it("falls back to the static list while no upstream config is cached", () => {
+    resetModelCache()
+    const ids = textOnlyModelIds()
+    expect(ids.has("GLM-5.1")).toBe(true)
+    expect(ids.has("GLM-5.3")).toBe(true)
   })
 })
 
