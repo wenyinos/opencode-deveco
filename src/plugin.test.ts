@@ -52,6 +52,26 @@ describe("applyConfigHook", () => {
     }
   })
 
+  it("points the small model at the cloud's declared one unless the user set one", () => {
+    const dir = withTempConfigDir()
+    try {
+      persistModels({ models: { "GLM-5.3": { name: "GLM-5.3" } } } as ProviderInfo, {
+        small_model: "GLM-5.3",
+      })
+      const fresh: { provider?: Record<string, unknown>; small_model?: string } = {}
+      applyConfigHook(fresh)
+      expect(fresh.small_model).toBe(`${PROVIDER_ID}/GLM-5.3`)
+
+      const mine: { provider?: Record<string, unknown>; small_model?: string } = {
+        small_model: "anthropic/claude-haiku",
+      }
+      applyConfigHook(mine)
+      expect(mine.small_model).toBe("anthropic/claude-haiku") // the user's choice wins
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it("merges into a user-owned entry without clobbering its fields", () => {
     const dir = withTempConfigDir()
     try {

@@ -407,6 +407,13 @@ class LoginService {
   private readonly tokenStore: TokenStore
   private server: LocalAuthServer | null = null
   private userInfo: UserInfo | null = null
+  /**
+   * Bumped by cancel() and logout(). A login keeps the generation it started
+   * with and refuses to persist tokens when it no longer matches, so a login
+   * that finishes after the user signed out cannot resurrect the session (the
+   * upstream client guards the same race with a login-attempt generation).
+   */
+  private loginAttempt = 0
 
   constructor(tokenStore: TokenStore, config?: Partial<LoginConfig>) {
     this.tokenStore = tokenStore
@@ -442,7 +449,8 @@ class LoginService {
     this.validateLoginUrl(url)
     if (opts.openBrowser !== false) this.openLoginPage(url)
 
-    const result = this.finishLogin(callbackPromise).finally(async () => {
+    const attempt = ++this.loginAttempt
+    const result = this.finishLogin(callbackPromise, attempt).finally(async () => {
       await server.stop().catch(() => {})
       if (this.server === server) this.server = null
     })
@@ -458,11 +466,21 @@ class LoginService {
     }
   }
 
-  private async finishLogin(callbackPromise: Promise<CallbackData>): Promise<LoginResult> {
+  private async finishLogin(
+    callbackPromise: Promise<CallbackData>,
+    attempt: number,
+  ): Promise<LoginResult> {
     try {
       const callbackData = await callbackPromise
       const jwtToken = await this.getJwtToken(callbackData.tempToken)
       const userInfo = await this.getUserInfoFromJwt(jwtToken)
+
+      // The user may have signed out (or cancelled) while the tokens were being
+      // fetched; persisting them now would undo that.
+      if (attempt !== this.loginAttempt) {
+        log.warn("login finished after being superseded; discarding the tokens")
+        return { success: false, cancelled: true, error: "Login was superseded" }
+      }
 
       await this.tokenStore.save(jwtToken)
       this.userInfo = userInfo
@@ -474,6 +492,7 @@ class LoginService {
   }
 
   cancel(): void {
+    this.loginAttempt++
     this.server?.cancel()
   }
 
@@ -488,6 +507,8 @@ class LoginService {
   }
 
   async logout(): Promise<void> {
+    // Supersede any login still in flight, so it cannot write its tokens back.
+    this.loginAttempt++
     await this.tokenStore.clear()
     this.userInfo = null
   }

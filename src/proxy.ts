@@ -650,6 +650,14 @@ export class DevEcoProxy {
       if (jwtToken) {
         const refreshed = await this.refreshAccessToken(jwtToken)
         if (refreshed) {
+          // A logout (or a switch to another account) may have landed while the
+          // refresh was in flight — installing the session then would revive
+          // what the user just ended. The upstream client re-checks the stored
+          // jwtToken after refreshing for the same reason.
+          if ((await this.tokenStore.load()) !== jwtToken) {
+            log.warn("proxy: credentials changed while refreshing; discarding the refreshed session")
+            throw new Error("DevEco credentials changed while refreshing; retry the request")
+          }
           this.session = {
             userInfo:
               this.session?.userInfo ??

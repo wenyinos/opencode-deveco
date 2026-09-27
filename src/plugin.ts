@@ -136,12 +136,16 @@ export function mergeModels(
   return merged
 }
 
-export function applyConfigHook(cfg: { provider?: Record<string, unknown> }): void {
+export function applyConfigHook(cfg: {
+  provider?: Record<string, unknown>
+  small_model?: string
+}): void {
   try {
     if (!cfg || typeof cfg !== "object") return
     cfg.provider ??= {}
 
-    const persistedModels = loadPersistedModels()?.config.models
+    const persisted = loadPersistedModels()
+    const persistedModels = persisted?.config.models
     const catalog =
       persistedModels && Object.keys(persistedModels).length > 0
         ? persistedModels
@@ -158,14 +162,20 @@ export function applyConfigHook(cfg: { provider?: Record<string, unknown> }): vo
         models: { ...catalog },
       }
       cfg.provider[PROVIDER_ID] = provider
-      return
-    }
-
-    // A user-owned entry keeps its own fields (baseURL, options, …); only the
-    // model list is merged into it.
-    if (typeof existing === "object") {
+    } else if (typeof existing === "object") {
+      // A user-owned entry keeps its own fields (baseURL, options, …); only the
+      // model list is merged into it.
       const entry = existing as Record<string, unknown>
       entry.models = mergeModels({ ...catalog }, entry.models)
+    }
+
+    // opencode resolves the small model from this top-level field (the DevEco
+    // fork reads task_default_model_map directly), so pointing it at the
+    // cloud's declared model keeps title generation and similar side-tasks on
+    // the model DevEco intends. A user-set small_model wins.
+    const small = persisted?.taskMap?.small_model
+    if (small && typeof small === "string" && !cfg.small_model) {
+      cfg.small_model = `${PROVIDER_ID}/${small}`
     }
   } catch (err) {
     log.error("config hook failed", { error: String(err) })
