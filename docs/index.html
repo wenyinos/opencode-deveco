@@ -70,8 +70,22 @@
   .lede { font-size: clamp(15px, 1.5vw, 17px); color: var(--muted); max-width: 760px; }
   .lede b { color: #dbeafe; font-weight: 600; }
 
+  .actions { margin-top: 30px; display: flex; gap: 12px; flex-wrap: wrap; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 11px 20px; border-radius: 11px; font-size: 15px; font-weight: 600;
+    text-decoration: none; transition: transform .15s, box-shadow .15s, background .15s, border-color .15s;
+  }
+  .btn.primary {
+    background: linear-gradient(120deg, var(--sky), var(--violet)); color: #06121f;
+    box-shadow: 0 6px 22px rgba(56,189,248,0.24);
+  }
+  .btn.primary:hover { transform: translateY(-2px); box-shadow: 0 10px 30px rgba(56,189,248,0.34); }
+  .btn.ghost { border: 1px solid var(--line); background: var(--panel); color: var(--text); }
+  .btn.ghost:hover { border-color: rgba(56,189,248,0.4); background: var(--panel-strong); transform: translateY(-2px); }
+
   .cmd {
-    margin-top: 32px; border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+    margin-top: 26px; border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
     background: rgba(2,6,12,0.72); max-width: 660px;
   }
   .cmd .bar {
@@ -149,7 +163,11 @@
 
   footer { padding: 44px 0 60px; border-top: 1px solid var(--line); margin-top: 30px; }
   footer .inner { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-  .repo { font-family: var(--mono); font-size: 16px; color: #dbeafe; }
+  .repo {
+    font-family: var(--mono); font-size: 16px; color: #dbeafe; text-decoration: none;
+    border-bottom: 1px solid transparent; transition: color .15s, border-color .15s;
+  }
+  .repo:hover { color: var(--sky); border-bottom-color: rgba(56,189,248,0.5); }
   .license { font-family: var(--mono); font-size: 13.5px; color: var(--dim); }
 </style>
 </head>
@@ -183,6 +201,12 @@
         无侵入地接进 opencode、Claude Code 以及任何 OpenAI 兼容客户端。
         一条本地代理，一个端口，不改 opencode 一行源码。
       </p>
+
+      <div class="actions">
+        <a class="btn primary" href="https://github.com/wenyinos/opencode-deveco">查看仓库</a>
+        <a class="btn ghost" href="https://github.com/wenyinos/opencode-deveco/releases">更新日志</a>
+        <a class="btn ghost" href="https://github.com/wenyinos/opencode-deveco/blob/main/README_zh.md">中文文档</a>
+      </div>
 
       <div class="cmd">
         <div class="bar">
@@ -323,14 +347,17 @@
     <div class="inner">
       <div class="sec-head"><span class="num">4</span><h2>项目海报</h2><span class="rule"></span></div>
       <div class="poster-wrap">
-        <img src="./poster.png" alt="opencode-deveco 项目海报" loading="lazy">
+        <a href="./poster.png" target="_blank" rel="noopener">
+          <img src="./poster.png" alt="opencode-deveco 项目海报" loading="lazy">
+        </a>
       </div>
+      <p class="poster-hint">点击图片可在新标签页查看 2400×4340 原图</p>
     </div>
   </section>
 
   <footer>
     <div class="inner">
-      <div class="repo">wenyinos/opencode-deveco</div>
+      <a class="repo" href="https://github.com/wenyinos/opencode-deveco">wenyinos/opencode-deveco</a>
       <div class="license">MIT License · 仅供个人合法使用</div>
     </div>
   </footer>
