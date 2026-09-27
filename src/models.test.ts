@@ -1,6 +1,10 @@
 import { describe, it, expect, afterEach } from "vitest"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
 import {
   getDevecoProviderConfig,
+  loadPersistedModels,
   parseReasoningEfforts,
   reasoningLevelsFromConfig,
   resetModelCache,
@@ -72,5 +76,51 @@ describe("model config projection", () => {
   it("reports no declared levels when nothing is cached", () => {
     resetModelCache()
     expect(reasoningLevelsFromConfig("GLM-5.3")).toBeNull()
+  })
+
+  it("fills in the sizes the cloud omits and drops modalities opencode rejects", async () => {
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          code: 200,
+          body: {
+            inner_models: [
+              { model_configs: [{ model_id: "Tiny", input_modalities: ["text", "hologram"] }] },
+            ],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      )) as typeof fetch
+
+    const cfg = await getDevecoProviderConfig("mock-token")
+    const model = cfg.models?.["Tiny"]
+    // opencode treats a missing limit as 0 tokens, so the upstream defaults apply.
+    expect(model?.limit).toEqual({ context: 32768, output: 8192 })
+    expect(model?.modalities).toEqual({ input: ["text"], output: ["text"] })
+  })
+
+  it("persists the fetched catalog for the next start", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-deveco-models-"))
+    const oldDir = process.env.OPENCODE_CONFIG_DIR
+    process.env.OPENCODE_CONFIG_DIR = dir
+    try {
+      globalThis.fetch = (async () =>
+        new Response(
+          JSON.stringify({
+            code: 200,
+            body: { inner_models: [{ model_configs: [{ model_id: "Persisted" }] }] },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        )) as typeof fetch
+      await getDevecoProviderConfig("mock-token")
+
+      resetModelCache()
+      const loaded = loadPersistedModels()
+      expect(Object.keys(loaded?.config.models ?? {})).toEqual(["Persisted"])
+    } finally {
+      if (oldDir === undefined) delete process.env.OPENCODE_CONFIG_DIR
+      else process.env.OPENCODE_CONFIG_DIR = oldDir
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

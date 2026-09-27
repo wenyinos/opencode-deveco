@@ -125,6 +125,16 @@ export function queueCooldownMs(): number {
     : DEVECO_QUEUE_COOLDOWN_SEC * 1000
 }
 
+/**
+ * Consent for the "improve DevEco tools" telemetry flag, sent as
+ * `X-DevEco-Improvement-Enabled` on every inference request. The upstream
+ * client reads its own privacy setting and defaults to on; here the default is
+ * the same and `DEVECO_TOOL_IMPROVEMENT=0` turns it off.
+ */
+export function toolImprovementEnabled(): boolean {
+  return process.env.DEVECO_TOOL_IMPROVEMENT !== "0"
+}
+
 /** accessToken lifetime in ms (30 min, matching deveco-code). */
 export const ACCESS_TOKEN_EXPIRES_MS = 30 * 60 * 1000
 

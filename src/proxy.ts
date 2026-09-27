@@ -30,7 +30,13 @@ import {
   maxConcurrency,
   maxQueue,
   queueCooldownMs,
+  toolImprovementEnabled,
 } from "./config.js"
+import {
+  CHINA_ACCOUNT_ONLY_MESSAGE,
+  MAINLAND_CHINA_ONLY_MESSAGE,
+  regionBlocked,
+} from "./region-policy.js"
 import { createLoginService, userInfoFromJwt, type RefreshResult, type UserInfo } from "./auth-login.js"
 import { JsonTokenStore } from "./token-store.js"
 import { getDevecoProviderConfig, resetModelCache } from "./models.js"
@@ -755,6 +761,44 @@ export class DevEcoProxy {
   // Forwarding
   // ---------------------------------------------------------------------------
 
+  /**
+   * Region gate (see region-policy.ts): the service is offered in Mainland
+   * China only, and the upstream client refuses a European timezone before
+   * anything else happens. Answering here stops a blocked request from kicking
+   * off a login or a token refresh and gives a readable reason instead of an
+   * opaque upstream failure. `withAccount` adds the account-region check, which
+   * needs a session and therefore runs after the token exists.
+   *
+   * Returns true when the request was answered and the caller must stop.
+   */
+  private refuseOutsideRegion(
+    res: http.ServerResponse,
+    protocol: "openai" | "anthropic",
+    withAccount: boolean,
+  ): boolean {
+    let status = 0
+    let message = ""
+    if (regionBlocked()) {
+      status = 451
+      message = MAINLAND_CHINA_ONLY_MESSAGE
+    } else if (withAccount) {
+      const country = this.session?.userInfo?.countryCode?.trim().toUpperCase()
+      if (country && country !== "CN") {
+        status = 403
+        message = CHINA_ACCOUNT_ONLY_MESSAGE
+      }
+    }
+    if (!status) return false
+
+    log.warn("proxy: request refused by the region gate", { status, protocol })
+    if (protocol === "anthropic") {
+      this.json(res, status, { type: "error", error: { type: "invalid_request_error", message } })
+    } else {
+      this.json(res, status, { error: { message, type: "invalid_request_error" } })
+    }
+    return true
+  }
+
   private async forwardChat(
     req: http.IncomingMessage,
     res: http.ServerResponse,
@@ -790,6 +834,10 @@ export class DevEcoProxy {
       /* forward as-is if not JSON */
     }
 
+    // Timezone check first: it needs no credentials, so a blocked request never
+    // triggers a token refresh or a browser login.
+    if (this.refuseOutsideRegion(res, "openai", false)) return
+
     let accessToken: string
     try {
       accessToken = await this.ensureToken()
@@ -798,6 +846,8 @@ export class DevEcoProxy {
       res.writeHead(401, { "Content-Type": "application/json" })
       return void res.end(JSON.stringify({ error: { message: msg, type: "auth_error" } }))
     }
+
+    if (this.refuseOutsideRegion(res, "openai", true)) return
 
     // Build the upstream URL. DevEco needs /no-stream in the path for
     // non-streaming requests:
@@ -819,6 +869,7 @@ export class DevEcoProxy {
       "User-Agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
       "accept-language": "zh-CN",
+      "X-DevEco-Improvement-Enabled": String(toolImprovementEnabled()),
     }
 
     // DevEco rejects several OpenAI-side shapes (the "developer" role, the
@@ -966,6 +1017,10 @@ export class DevEcoProxy {
     const isStream = anthropicReq.stream === true
     const model = anthropicReq.model
 
+    // Timezone check first, exactly as on the OpenAI path: no credentials
+    // needed, so a blocked request never starts a login.
+    if (this.refuseOutsideRegion(res, "anthropic", false)) return
+
     let accessToken: string
     try {
       accessToken = await this.ensureToken()
@@ -977,6 +1032,8 @@ export class DevEcoProxy {
         error: { type: "authentication_error", message: msg },
       }))
     }
+
+    if (this.refuseOutsideRegion(res, "anthropic", true)) return
 
     // Transform Anthropic → OpenAI
     const openaiReq = anthropicToOpenaiChat(anthropicReq)
@@ -1003,6 +1060,7 @@ export class DevEcoProxy {
       "Session-Id": convKey,
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
       "accept-language": "zh-CN",
+      "X-DevEco-Improvement-Enabled": String(toolImprovementEnabled()),
     }
 
     // Same cancellable wait as the OpenAI path, and the same teardown: the slot

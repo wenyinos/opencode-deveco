@@ -6,6 +6,9 @@
 // map to opencode's ModelInfo shape, apply blacklist, fall back to defaults
 // on any failure.
 
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
 import {
   DEVECO_DEFAULTS,
   DEVECO_MODEL_CONFIG_URL,
@@ -93,19 +96,30 @@ function parseOutputLimit(output: string | number | undefined): number | undefin
   return isNaN(num) ? undefined : num
 }
 
-function mapModelConfigToInternal(config: RawModelConfig): ModelInfo {
-  const limit: { context?: number; output?: number } = {}
-  if (config.context_window) limit.context = config.context_window
-  const outputLimit = parseOutputLimit(config.output)
-  if (outputLimit) limit.output = outputLimit
+/** Fallbacks the upstream plugin applies when the cloud omits a size: leaving
+ * them unset makes opencode treat the model as 0-context. */
+const DEFAULT_CONTEXT_LIMIT = 32768
+const DEFAULT_OUTPUT_LIMIT = 8192
 
-  const info: ModelInfo = { name: config.model_id }
+/** Modality names opencode's schema accepts; the cloud may send others. */
+const KNOWN_MODALITIES = ["text", "audio", "image", "video", "pdf"]
+
+function toInputModalities(modalities: string[] | undefined): string[] {
+  const known = (modalities ?? []).filter((m) => KNOWN_MODALITIES.includes(m))
+  return known.length > 0 ? known : ["text"]
+}
+
+function mapModelConfigToInternal(config: RawModelConfig): ModelInfo {
+  const info: ModelInfo = {
+    name: config.model_id,
+    limit: {
+      context: config.context_window || DEFAULT_CONTEXT_LIMIT,
+      output: parseOutputLimit(config.output) ?? DEFAULT_OUTPUT_LIMIT,
+    },
+    modalities: { input: toInputModalities(config.input_modalities), output: ["text"] },
+  }
   if (config.thinking_mode === "on") info.reasoning = true
   if (config.tool_call_mode === "tool_calls") info.tool_call = true
-  if (Object.keys(limit).length > 0) info.limit = limit
-  if (config.input_modalities && config.input_modalities.length > 0) {
-    info.modalities = { input: config.input_modalities, output: ["text"] }
-  }
 
   // The cloud declares which effort tiers the model understands and which one
   // to use by default. Exposing the tiers as variants lets the client switch
@@ -229,6 +243,7 @@ export async function getDevecoProviderConfig(accessToken: string): Promise<Prov
     )
     cachedConfigAt = Date.now()
     cachedTaskDefaultModelMap = taskDefaultModelMap ?? DEVECO_DEFAULTS.taskDefaultModelMap
+    persistModels(cachedConfig, cachedTaskDefaultModelMap)
     return cachedConfig
   } catch (err) {
     log.warn("failed to fetch models, using defaults", { error: String(err) })
@@ -276,6 +291,57 @@ export function textOnlyModelsFromConfig(): Set<string> | null {
     }
   }
   return ids
+}
+
+// ---------------------------------------------------------------------------
+// Persisted catalog
+//
+// opencode's config hook is synchronous and runs before any network call can
+// happen, so the cloud catalog — including the effort tiers each model
+// declares — has to be on disk for the hook to inject it. The file sits next
+// to the jwtToken and is rewritten whenever a fetch succeeds.
+// ---------------------------------------------------------------------------
+
+function modelsCachePath(): string {
+  const base =
+    process.env.OPENCODE_CONFIG_DIR ||
+    path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "opencode")
+  return path.join(base, "opencode-deveco", "models.json")
+}
+
+export interface PersistedModels {
+  config: ProviderInfo
+  taskMap?: Record<string, string>
+}
+
+/** Persist the fetched catalog so the next start can inject it without waiting
+ * for a network round-trip. Best effort: a failure only costs a cold start on
+ * the static defaults. */
+export function persistModels(config: ProviderInfo, taskMap?: Record<string, string>): void {
+  const file = modelsCachePath()
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    const tmp = `${file}.tmp`
+    fs.writeFileSync(tmp, JSON.stringify({ fetchedAt: Date.now(), config, taskMap }), { mode: 0o600 })
+    fs.renameSync(tmp, file)
+  } catch (err) {
+    log.warn("failed to persist the model catalog", { error: String(err) })
+  }
+}
+
+/** Read the persisted catalog, or null when there is none / it is unreadable. */
+export function loadPersistedModels(): PersistedModels | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(modelsCachePath(), "utf8")) as {
+      config?: ProviderInfo
+      taskMap?: Record<string, string>
+    }
+    if (!parsed || typeof parsed !== "object") return null
+    if (!parsed.config || typeof parsed.config !== "object") return null
+    return { config: parsed.config, taskMap: parsed.taskMap }
+  } catch {
+    return null
+  }
 }
 
 /** Reset caches (used when the user re-logs in). */

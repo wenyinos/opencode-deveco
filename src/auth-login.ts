@@ -79,6 +79,36 @@ interface CallbackData {
   quit?: string
 }
 
+/** Chrome UA, as the upstream login client sends: some corporate gateways
+ * reject requests that do not look like a browser. */
+const LOGIN_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+/**
+ * Read a login-server response as JSON, failing with something readable when a
+ * gateway answers with an HTML error page. The bare `res.json()` failure
+ * ("Unexpected token '<'") sends people hunting for a bug in the proxy instead
+ * of in their network.
+ */
+async function parseLoginJson<T>(res: Response): Promise<T> {
+  const contentType = (res.headers.get("content-type") ?? "").toLowerCase()
+  const body = (await res.text()).trim()
+  if (contentType.includes("html") || /^\s*(<!doctype|<html)/i.test(body)) {
+    throw new Error(
+      `auth server returned HTML instead of JSON (content-type: ${contentType || "unknown"}); a gateway or proxy error page likely intercepted the request`,
+    )
+  }
+  try {
+    return JSON.parse(body) as T
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    throw new Error(
+      `failed to parse the auth server response as JSON: ${msg}. Preview: ${body.slice(0, 200)}`,
+      { cause: err },
+    )
+  }
+}
+
 interface TokenCheckResponse {
   status: boolean
   userInfo?: {
@@ -528,7 +558,7 @@ class LoginService {
     const url = `${this.config.baseUrl}/${this.config.tempTokenCheckUrl}?${params}`
     const res = await fetch(url, {
       signal: AbortSignal.timeout(20_000),
-      headers: { "accept-language": "zh-CN" },
+      headers: { "User-Agent": LOGIN_USER_AGENT, "accept-language": "zh-CN" },
     })
 
     if (!res.ok) {
@@ -557,7 +587,10 @@ class LoginService {
       accessToken: tokenInfo.userInfo.accessToken,
       refreshToken: tokenInfo.userInfo.refreshToken ?? "",
       jwtToken,
-      countryCode: "CN",
+      // The account's real region, normalised the way the upstream login
+      // service does. Hardcoding "CN" here would let a non-China account
+      // through the region gate and fail upstream instead.
+      countryCode: tokenInfo.userInfo.nationalCode?.trim().toUpperCase() || "CN",
       language: "zh_CN",
       isRealName: parseRealName(tokenInfo.userInfo.realName),
     }
@@ -568,13 +601,13 @@ class LoginService {
     const url = `${this.config.baseUrl}/${this.config.jwtTokenCheckUrl}`
     const res = await fetch(url, {
       signal: AbortSignal.timeout(20_000),
-      headers: { refresh: "false", jwtToken, "accept-language": "zh-CN" },
+      headers: { refresh: "false", jwtToken, "User-Agent": LOGIN_USER_AGENT, "accept-language": "zh-CN" },
     })
     if (!res.ok) {
       log.error("failed to check jwtToken", { statusCode: res.status })
       throw new Error(`Failed to check jwtToken: ${res.status}`)
     }
-    return (await res.json()) as TokenCheckResponse
+    return parseLoginJson<TokenCheckResponse>(res)
   }
 
   /**
@@ -595,13 +628,13 @@ class LoginService {
     try {
       const res = await fetch(url, {
         signal: AbortSignal.timeout(20_000),
-        headers: { refresh: "true", jwtToken, "accept-language": "zh-CN" },
+        headers: { refresh: "true", jwtToken, "User-Agent": LOGIN_USER_AGENT, "accept-language": "zh-CN" },
       })
       if (!res.ok) {
         log.error(`refreshToken failed: HTTP ${res.status}`)
         return null
       }
-      const result = (await res.json()) as TokenCheckResponse
+      const result = await parseLoginJson<TokenCheckResponse>(res)
       if (!result.status || !result.userInfo) {
         log.error("refreshToken failed: invalid response", { status: result.status })
         return null

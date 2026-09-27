@@ -22,12 +22,13 @@ import {
   DEVECO_EXIT_QUEUE_URL,
   OAUTH_DUMMY_KEY,
   PROVIDER_ID,
+  type ModelInfo,
   type ProviderInfo,
   log,
 } from "./config.js"
 import { createLoginService } from "./auth-login.js"
 import { JsonTokenStore } from "./token-store.js"
-import { getDevecoProviderConfig, resetModelCache } from "./models.js"
+import { getDevecoProviderConfig, loadPersistedModels, resetModelCache } from "./models.js"
 import { DevEcoProxy, conversationKey } from "./proxy.js"
 import { applyVisionRouting } from "./vision-routing.js"
 import { normalizeOpenAIChatBody } from "./openai-normalize.js"
@@ -108,24 +109,63 @@ function startProxy(): Promise<DevEcoProxy> {
 
 // ---------------------------------------------------------------------------
 // config hook — inject a `deveco` provider that points at our local proxy.
-// Static default models are injected so `opencode models` lists them even when
-// the dynamic fetch hasn't run yet. Does not clobber an existing entry.
+// The model list comes from the catalog snapshot the last successful fetch
+// persisted, so cloud-side model changes reach the picker on the next start;
+// the static defaults cover a cold start. A user-owned entry keeps its own
+// fields and per-model settings.
 // ---------------------------------------------------------------------------
 
-function applyConfigHook(cfg: { provider?: Record<string, unknown> }): void {
+/**
+ * Merge the cloud catalog with whatever the user configured: the cloud supplies
+ * the metadata (context limits, effort tiers, modalities), an explicit user
+ * entry still wins field by field.
+ */
+export function mergeModels(
+  catalog: Record<string, ModelInfo>,
+  userModels: unknown,
+): Record<string, ModelInfo> {
+  const merged: Record<string, ModelInfo> = { ...catalog }
+  if (!userModels || typeof userModels !== "object") return merged
+  for (const [id, userModel] of Object.entries(userModels as Record<string, unknown>)) {
+    const fromCatalog = merged[id]
+    merged[id] =
+      fromCatalog && userModel && typeof userModel === "object"
+        ? { ...fromCatalog, ...(userModel as ModelInfo) }
+        : (userModel as ModelInfo)
+  }
+  return merged
+}
+
+export function applyConfigHook(cfg: { provider?: Record<string, unknown> }): void {
   try {
     if (!cfg || typeof cfg !== "object") return
     cfg.provider ??= {}
-    if (!cfg.provider[PROVIDER_ID]) {
+
+    const persistedModels = loadPersistedModels()?.config.models
+    const catalog =
+      persistedModels && Object.keys(persistedModels).length > 0
+        ? persistedModels
+        : DEVECO_DEFAULTS.provider.models
+
+    const existing = cfg.provider[PROVIDER_ID]
+    if (!existing) {
       const provider: ProviderInfo = {
         name: "DevEco Code",
         npm: "@ai-sdk/openai-compatible",
         api: PROXY_BASE_URL,
         env: [],
         options: { apiKey: OAUTH_DUMMY_KEY, baseURL: PROXY_BASE_URL },
-        models: { ...DEVECO_DEFAULTS.provider.models },
+        models: { ...catalog },
       }
       cfg.provider[PROVIDER_ID] = provider
+      return
+    }
+
+    // A user-owned entry keeps its own fields (baseURL, options, …); only the
+    // model list is merged into it.
+    if (typeof existing === "object") {
+      const entry = existing as Record<string, unknown>
+      entry.models = mergeModels({ ...catalog }, entry.models)
     }
   } catch (err) {
     log.error("config hook failed", { error: String(err) })
