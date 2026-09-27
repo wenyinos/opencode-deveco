@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, afterEach } from "vitest"
 import {
   normalizeOpenAIAssistantThink,
   normalizeOpenAIChatBody,
@@ -7,7 +7,9 @@ import {
   normalizeOpenAIReasoningEffort,
   normalizeOpenAIThinkingSplit,
   normalizeOpenAIToolChoice,
+  snapEffortToDeclared,
 } from "./openai-normalize.js"
+import { getDevecoProviderConfig, resetModelCache } from "./models.js"
 
 function tool(name: string) {
   return { type: "function", function: { name } }
@@ -216,6 +218,81 @@ describe("normalizeOpenAIChatBody", () => {
     const r = normalizeOpenAIChatBody(body)
     expect(r.changed).toBe(false)
     expect(r.body).toBe(body)
+  })
+})
+
+describe("snapEffortToDeclared", () => {
+  const levels = ["low", "high", "max"]
+
+  it("keeps a declared tier and snaps the wider OpenAI vocabulary onto a declared one", () => {
+    expect(snapEffortToDeclared("high", levels)).toBe("high")
+    expect(snapEffortToDeclared("minimal", levels)).toBe("low")
+    expect(snapEffortToDeclared("medium", levels)).toBe("high") // tie → stronger tier
+    expect(snapEffortToDeclared("xhigh", levels)).toBe("max")
+    expect(snapEffortToDeclared("none", levels)).toBe("low")
+  })
+
+  it("uses a declared `none` tier when the model has one", () => {
+    expect(snapEffortToDeclared("none", ["none", "high", "max"])).toBe("none")
+  })
+
+  it("passes an unknown vocabulary through for the upstream to judge", () => {
+    expect(snapEffortToDeclared("turbo", levels)).toBe("turbo")
+  })
+})
+
+describe("normalizeOpenAIReasoningEffort against a cached model config", () => {
+  const originalFetch = globalThis.fetch
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    resetModelCache()
+  })
+
+  const primeConfig = async () => {
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          code: 200,
+          body: {
+            inner_models: [
+              {
+                model_configs: [
+                  {
+                    model_id: "GLM-5.3",
+                    thinking_mode: "on",
+                    reasoning_effort: '{"level":["low","high","max"],"default":"high"}',
+                  },
+                  { model_id: "GLM-5.1", thinking_mode: "on" },
+                ],
+              },
+            ],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      )) as typeof fetch
+    await getDevecoProviderConfig("mock-token")
+  }
+
+  it("snaps an undeclared tier instead of letting it land on undefined behaviour", async () => {
+    await primeConfig()
+    const r = normalizeOpenAIReasoningEffort({ model: "GLM-5.3", reasoning_effort: "medium" })
+    expect(r.changed).toBe(true)
+    expect(r.body.reasoning_effort).toBe("high")
+  })
+
+  it("leaves a declared tier alone", async () => {
+    await primeConfig()
+    const r = normalizeOpenAIReasoningEffort({ model: "GLM-5.3", reasoning_effort: "max" })
+    expect(r.changed).toBe(false)
+  })
+
+  it("keeps the none/off path for a model that declares no tiers", async () => {
+    await primeConfig()
+    const r = normalizeOpenAIReasoningEffort({ model: "GLM-5.1", reasoning_effort: "off" })
+    expect(r.changed).toBe(true)
+    expect("reasoning_effort" in r.body).toBe(false)
+    expect(r.body.thinking).toEqual({ type: "disabled" })
   })
 })
 

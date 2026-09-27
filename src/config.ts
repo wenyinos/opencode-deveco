@@ -191,6 +191,13 @@ export interface ModelInfo {
   limit?: { context?: number; input?: number; output?: number }
   modalities?: { input?: string[]; output?: string[] }
   cost?: Record<string, unknown>
+  /** Cloud-declared effort tiers, keyed by tier: opencode turns each into a
+   * switcher variant (`Ctrl+T`). Mirrors the upstream plugin's
+   * effortVariants(). */
+  variants?: Record<string, Record<string, unknown>>
+  /** Request options applied to every call until the user picks a variant —
+   * carries the cloud's default effort. Mirrors defaultEffortOption(). */
+  options?: Record<string, unknown>
 }
 
 /** Local plugin version, used in the modelConfig request as pluginVersion. */

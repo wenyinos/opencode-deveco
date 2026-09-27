@@ -24,6 +24,7 @@
 // never touched — these models cannot stop thinking upstream anyway.
 
 import { log } from "./config.js"
+import { reasoningLevelsFromConfig } from "./models.js"
 
 export interface BodyNormalization {
   body: Record<string, unknown>
@@ -138,12 +139,51 @@ export function normalizeOpenAIMaxTokens(
   return { body: rest, changed: true }
 }
 
+/** Effort tiers weakest to strongest, mirroring the upstream plugin's order
+ * (transform.ts: OPENAI_EFFORTS plus GLM's `max`). */
+const EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+
 /**
- * OpenAI clients spell "no reasoning" as reasoning_effort:"none" (some tools
- * send "off"). DevEco's enum only knows low|medium|high|xhigh|max and rejects
- * the whole request otherwise; the equivalent switch upstream is
- * thinking:{type:"disabled"}. Unrecognised values are left to the upstream
- * validator so a genuinely bogus effort still surfaces as a 400.
+ * Snap a client-supplied effort onto a tier the model's cloud config declares.
+ * Generic clients speak the wider OpenAI vocabulary — opencode's defaults, and
+ * this proxy's own Anthropic budget mapping, both produce `medium` — while the
+ * cloud declares only what the model understands (GLM-5.3: low|high|max). A
+ * tier outside that list is not rejected; it silently lands on undefined
+ * behaviour, which measured as the *heaviest* reasoning of all tiers (medium →
+ * 352 chars vs high → 103). Ties go to the stronger tier so a snap never
+ * quietly weakens a request. A value from an unknown vocabulary is passed
+ * through untouched for the upstream to judge.
+ */
+export function snapEffortToDeclared(value: string, levels: string[]): string {
+  if (levels.includes(value)) return value
+  const target = EFFORT_ORDER.indexOf(value)
+  if (target < 0) return value
+
+  let best = levels[0]
+  let bestDistance = Number.POSITIVE_INFINITY
+  for (const level of levels) {
+    const index = EFFORT_ORDER.indexOf(level)
+    if (index < 0) continue
+    const distance = Math.abs(index - target)
+    if (distance < bestDistance || (distance === bestDistance && index > EFFORT_ORDER.indexOf(best))) {
+      best = level
+      bestDistance = distance
+    }
+  }
+  return best
+}
+
+/**
+ * Keep `reasoning_effort` on a tier the model actually declares. The cloud
+ * publishes the accepted tiers per model, and the upstream client only ever
+ * offers those, so a value from outside the list has no defined meaning
+ * upstream; it is snapped onto the nearest declared tier instead.
+ *
+ * When the cloud declares nothing (a model without effort support, or no
+ * config cached yet), the historical best-effort applies: "none"/"off" is
+ * expressed as thinking:{type:"disabled"} — which today's GLM models ignore,
+ * but which is the correct way to say it and will work the day the upstream
+ * honours it — and every other value is passed through.
  */
 export function normalizeOpenAIReasoningEffort(
   body: Record<string, unknown>,
@@ -151,6 +191,20 @@ export function normalizeOpenAIReasoningEffort(
   const effort = body.reasoning_effort
   if (typeof effort !== "string") return { body, changed: false }
   const value = effort.trim().toLowerCase()
+
+  const modelId = typeof body.model === "string" ? body.model : undefined
+  const declared = modelId ? reasoningLevelsFromConfig(modelId) : null
+  if (declared) {
+    const snapped = snapEffortToDeclared(value, declared)
+    if (snapped === effort) return { body, changed: false }
+    log.debug("proxy: reasoning_effort snapped to a declared tier", {
+      from: effort,
+      to: snapped,
+      declared: declared.join("|"),
+    })
+    return { body: { ...body, reasoning_effort: snapped }, changed: true }
+  }
+
   if (value !== "none" && value !== "off") return { body, changed: false }
 
   const rest: Record<string, unknown> = { ...body }

@@ -29,6 +29,42 @@ interface RawModelConfig {
   output?: string | number
   tool_choice?: string
   tool_call_mode?: string
+  /** JSON text declaring the effort tiers this model accepts (see parseReasoningEfforts). */
+  reasoning_effort?: unknown
+}
+
+/** Parsed cloud `reasoning_effort` payload: the accepted tiers plus the tier to
+ * use when a request names none. The cloud ships JSON text; both the current
+ * `{level:[...],default:"..."}` form and the rollout-era plain array are
+ * accepted, and a default outside the level list is ignored — the same
+ * tolerance as the upstream plugin (deveco-models.ts parseReasoningEfforts). */
+export interface ReasoningEfforts {
+  levels: string[]
+  default?: string
+}
+
+function stringItems(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.length > 0)
+    : []
+}
+
+export function parseReasoningEfforts(raw: unknown): ReasoningEfforts {
+  if (typeof raw !== "string") return { levels: [] }
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (Array.isArray(parsed)) return { levels: stringItems(parsed) }
+    if (typeof parsed === "object" && parsed !== null) {
+      const obj = parsed as { level?: unknown; default?: unknown }
+      const levels = stringItems(obj.level)
+      const def =
+        typeof obj.default === "string" && levels.includes(obj.default) ? obj.default : undefined
+      return { levels, default: def }
+    }
+    return { levels: [] }
+  } catch {
+    return { levels: [] }
+  }
 }
 
 interface RawInnerModel {
@@ -69,6 +105,20 @@ function mapModelConfigToInternal(config: RawModelConfig): ModelInfo {
   if (Object.keys(limit).length > 0) info.limit = limit
   if (config.input_modalities && config.input_modalities.length > 0) {
     info.modalities = { input: config.input_modalities, output: ["text"] }
+  }
+
+  // The cloud declares which effort tiers the model understands and which one
+  // to use by default. Exposing the tiers as variants lets the client switch
+  // them; the default rides options into every request until it does. Only
+  // reasoning models get either — same gate as the upstream plugin.
+  const efforts = parseReasoningEfforts(config.reasoning_effort)
+  if (info.reasoning && efforts.levels.length > 0) {
+    info.variants = Object.fromEntries(
+      efforts.levels.map((effort) => [effort, { reasoningEffort: effort }]),
+    )
+  }
+  if (info.reasoning && efforts.default) {
+    info.options = { reasoningEffort: efforts.default }
   }
   return info
 }
@@ -202,6 +252,19 @@ export function getTaskDefaultModelMap(): Record<string, string> {
  * even when it yields an empty set: "no text-only models" is then the
  * upstream's own statement, not a gap to fill in.
  */
+/**
+ * The effort tiers the cloud declared for a model, or null when it declared
+ * none (or nothing is cached). A client speaking the wider OpenAI vocabulary
+ * can name a tier the model never advertised; callers snap such a request onto
+ * a tier the upstream actually understands.
+ */
+export function reasoningLevelsFromConfig(modelId: string): string[] | null {
+  const variants = cachedConfig?.models?.[modelId]?.variants
+  if (!variants) return null
+  const levels = Object.keys(variants)
+  return levels.length > 0 ? levels : null
+}
+
 export function textOnlyModelsFromConfig(): Set<string> | null {
   const models = cachedConfig?.models
   if (!models) return null
