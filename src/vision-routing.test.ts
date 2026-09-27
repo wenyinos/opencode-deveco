@@ -43,6 +43,15 @@ describe("vision routing", () => {
     expect("tool_choice" in r.body).toBe(false)
   })
 
+  it("reroutes GLM-5.3 too (the upstream config advertises text-only input)", () => {
+    const r = applyVisionRouting({
+      model: "GLM-5.3",
+      messages: [{ role: "user", content: [{ type: "text", text: "看这个图" }, imagePart()] }],
+    })!
+    expect(r.rerouted).toBe(true)
+    expect(r.upstreamModel).toBe("Qwen3_VL_235B_A22B_Instruct")
+  })
+
   it("routes when the current turn's tool message contains an image", () => {
     const r = applyVisionRouting({
       model: "GLM-5.1",
