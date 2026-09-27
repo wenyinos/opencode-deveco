@@ -272,6 +272,27 @@ grow ~1.25× per step.
   `GET /v2/models` nor in the upstream `modelConfig` (which only lists
   `GLM-5.3` / `GLM-5.1` / `Qwen3_VL_235B_A22B_Instruct`). Clients that build
   their model list dynamically will not see it — pin the model name by hand.
+  The proxy does not gate model names, but the upstream publishes no metadata
+  for it (context, modalities, tiers), which is why it stays out of the default
+  list. To enable it explicitly (opencode shown), add to
+  `~/.config/opencode/opencode.json`:
+
+  ```json
+  "provider": {
+    "deveco": {
+      "models": {
+        "deepseek-v4-flash": {
+          "name": "DeepSeek V4 Flash (1M)",
+          "limit": { "context": 1044480, "output": 32000 }
+        }
+      }
+    }
+  }
+  ```
+
+  `context` is the measured hard cap above; `output` is not declared upstream,
+  so 32000 (the GLM tier) is used as a starting point. Its reasoning arrives on
+  `reasoning_content` natively — no flag needed, unlike GLM.
 - **The proxy did not crash under this load**: 50+ calls with single request
   bodies of ~4 MB all returned normal HTTP responses; the only 5xx came from an
   upstream disconnect while two huge requests ran in parallel

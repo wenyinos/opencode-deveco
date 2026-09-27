@@ -272,7 +272,22 @@ DevEco 对短时间新建会话数量有限制（`UserSessionLimitExceeded`）�
 - **`deepseek-v4-flash` 是明确的硬限制**，上游报错会直接给出数字：`the prompt length 1044994 must less than the maximum input length 1044480`。超限即 `400`，边界干净。
 - **GLM-5.x 的拒绝不是长度报错**，而是 `403 ModelServiceError`：`Built-in model service is currently overloaded` / `Full inference timed out`（约 35 s 快速拒绝，不是真的跑满超时）。198K 稳定通过、204K 起稳定被拒，所以 ≈200K 是**观测量**而不是上游声明的限制；实际使用建议留余量（GLM-5.1 按 ~190K、GLM-5.3 按 ~180K 更稳，后者在 198K 时单次要 116 s）。
 - 同一段文本 GLM 的分词更省（约 1.17 tokens/词 vs deepseek 的 1.23），但可用容量仍差一个数量级。
-- **`deepseek-v4-flash` 是隐藏模型**：既不在 `GET /v2/models`，也不在上游 `modelConfig` 里（后者只有 `GLM-5.3` / `GLM-5.1` / `Qwen3_VL_235B_A22B_Instruct`）。靠模型列表自动拉取的客户端看不到它，必须手写模型名。
+- **`deepseek-v4-flash` 是隐藏模型**：既不在 `GET /v2/models`，也不在上游 `modelConfig` 里（后者只有 `GLM-5.3` / `GLM-5.1` / `Qwen3_VL_235B_A22B_Instruct`）。靠模型列表自动拉取的客户端看不到它，必须手写模型名。代理对模型名不做限制，上游认识的 id 直接指定即可；缺点是它的元数据（上下文/模态/档位）上游一概不提供，所以默认列表里不会有它。需要时手工启用（以 opencode 为例，写进 `~/.config/opencode/opencode.json`）：
+
+  ```json
+  "provider": {
+    "deveco": {
+      "models": {
+        "deepseek-v4-flash": {
+          "name": "DeepSeek V4 Flash (1M)",
+          "limit": { "context": 1044480, "output": 32000 }
+        }
+      }
+    }
+  }
+  ```
+
+  `context` 用上面的实测硬上限；`output` 上游未声明，此处按 GLM 同级取 32000，可按需调整。它的思考天然走 `reasoning_content`（无需任何参数），与 GLM 需要 `enable_thinking` 才分离不同。
 - 压测期间代理**未崩溃**：单请求 body 约 4 MB、连续 50+ 次调用都拿到正常 HTTP 响应；唯一一次 5xx 是并行发两个大请求时上游断连（`upstream fetch failed`），代理返回 `500` 后继续服务。
 - 复现方法：以 `usage.prompt_tokens` 为准从 2K 起按约 1.25 倍递增，直到被拒；把暗号挪到接近结尾（如 90% 处）可额外验证尾部是否被完整读取。
 
