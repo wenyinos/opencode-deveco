@@ -28,12 +28,11 @@
     position: relative;
     overflow: hidden;
   }
-  /* ambient light + grid */
   body::before {
     content: ""; position: absolute; inset: 0;
     background:
-      radial-gradient(760px 420px at 12% -4%, rgba(56,189,248,0.20), transparent 62%),
-      radial-gradient(700px 460px at 92% 6%, rgba(167,139,250,0.17), transparent 60%),
+      radial-gradient(780px 420px at 10% -6%, rgba(56,189,248,0.20), transparent 62%),
+      radial-gradient(720px 460px at 94% 4%, rgba(167,139,250,0.17), transparent 60%),
       radial-gradient(900px 520px at 50% 104%, rgba(52,211,153,0.10), transparent 62%);
     pointer-events: none;
   }
@@ -43,13 +42,12 @@
       linear-gradient(rgba(255,255,255,0.028) 1px, transparent 1px),
       linear-gradient(90deg, rgba(255,255,255,0.028) 1px, transparent 1px);
     background-size: 48px 48px;
-    mask-image: linear-gradient(180deg, rgba(0,0,0,0.9), rgba(0,0,0,0.25) 42%, rgba(0,0,0,0.75));
+    mask-image: linear-gradient(180deg, rgba(0,0,0,0.9), rgba(0,0,0,0.3) 46%, rgba(0,0,0,0.78));
     pointer-events: none;
   }
-  .wrap { position: relative; padding: 62px 66px 54px; }
+  .wrap { position: relative; padding: 60px 66px 52px; }
 
-  /* ---------- masthead ---------- */
-  .chips { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 26px; }
+  .chips { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 24px; }
   .chip {
     font-family: var(--mono); font-size: 13px; letter-spacing: .04em;
     padding: 6px 13px; border-radius: 999px;
@@ -58,51 +56,27 @@
   .chip.hot { color: var(--sky); border-color: rgba(56,189,248,0.42); background: rgba(56,189,248,0.09); }
 
   h1 {
-    font-size: 84px; line-height: 1.02; letter-spacing: -0.025em; font-weight: 800;
+    font-size: 88px; line-height: 1.0; letter-spacing: -0.028em; font-weight: 800;
     background: linear-gradient(96deg, #f0f9ff 6%, var(--sky) 42%, var(--violet) 88%);
     -webkit-background-clip: text; background-clip: text; color: transparent;
-    margin-bottom: 18px;
+    margin-bottom: 16px;
   }
-  .tagline { font-size: 27px; color: #cbd5e1; font-weight: 600; margin-bottom: 14px; }
-  .lede { font-size: 17.5px; line-height: 1.75; color: var(--muted); max-width: 980px; }
+  .tagline { font-size: 28px; color: #cbd5e1; font-weight: 600; margin-bottom: 12px; }
+  .lede { font-size: 17px; line-height: 1.7; color: var(--muted); max-width: 940px; }
   .lede b { color: #dbeafe; font-weight: 600; }
 
-  /* ---------- why ---------- */
-  .why {
-    margin-top: 38px; padding: 26px 30px; border-radius: 18px;
-    border: 1px solid rgba(56,189,248,0.22);
-    background: linear-gradient(180deg, rgba(56,189,248,0.07), rgba(56,189,248,0.02));
-  }
-  .why .h {
-    font-family: var(--mono); font-size: 12.5px; letter-spacing: .16em;
-    color: var(--sky); text-transform: uppercase; margin-bottom: 14px;
-  }
-  .why p { font-size: 16.5px; line-height: 1.8; color: #c3cfdd; }
-  .why .flow {
-    margin-top: 16px; display: flex; align-items: center; gap: 12px;
-    font-family: var(--mono); font-size: 15px; color: #dbeafe; flex-wrap: wrap;
-  }
-  .node {
-    padding: 9px 15px; border-radius: 11px; border: 1px solid var(--line);
-    background: rgba(255,255,255,0.05);
-  }
-  .node.accent { border-color: rgba(56,189,248,0.5); background: rgba(56,189,248,0.14); color: #e0f2fe; }
-  .arrow { color: var(--dim); font-size: 17px; }
-
-  /* ---------- section title ---------- */
-  .sec { margin-top: 46px; display: flex; align-items: center; gap: 14px; }
+  .sec { margin: 42px 0 20px; display: flex; align-items: center; gap: 14px; }
   .sec .num {
     font-family: var(--mono); font-size: 13px; color: var(--bg); font-weight: 700;
     background: linear-gradient(120deg, var(--sky), var(--violet));
     width: 27px; height: 27px; border-radius: 8px; display: grid; place-items: center;
   }
-  .sec h2 { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }
+  .sec h2 { font-size: 23px; font-weight: 700; letter-spacing: -0.01em; }
   .sec .rule { flex: 1; height: 1px; background: linear-gradient(90deg, var(--line), transparent); }
 
-  /* ---------- capability grid ---------- */
-  .grid { margin-top: 22px; display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
   .card {
-    border: 1px solid var(--line); border-radius: 16px; padding: 20px 22px 19px;
+    border: 1px solid var(--line); border-radius: 16px; padding: 20px 22px;
     background: var(--panel); position: relative; overflow: hidden;
   }
   .card::before {
@@ -111,8 +85,7 @@
   }
   .card.g::before { background: linear-gradient(180deg, var(--emerald), var(--sky)); }
   .card.a::before { background: linear-gradient(180deg, var(--amber), var(--violet)); }
-  .card h3 { font-size: 17.5px; margin-bottom: 9px; display: flex; align-items: center; gap: 9px; }
-  .card h3 .ico { font-size: 17px; }
+  .card h3 { font-size: 18px; margin-bottom: 9px; }
   .card p { font-size: 14.5px; line-height: 1.72; color: var(--muted); }
   .card p b { color: #dbeafe; font-weight: 600; }
   .card code {
@@ -120,180 +93,87 @@
     background: rgba(56,189,248,0.12); padding: 1.5px 6px; border-radius: 6px;
   }
 
-  /* ---------- quickstart ---------- */
-  .qs {
-    margin-top: 22px; border: 1px solid var(--line); border-radius: 16px;
-    background: rgba(2,6,12,0.72); overflow: hidden;
-  }
-  .qs .bar {
-    display: flex; gap: 7px; padding: 12px 16px; border-bottom: 1px solid var(--line);
-    background: rgba(255,255,255,0.025);
-  }
-  .dot { width: 11px; height: 11px; border-radius: 50%; }
-  .qs pre {
-    padding: 20px 24px; font-family: var(--mono); font-size: 15px; line-height: 1.95;
-    color: #cbd5e1; white-space: pre;
-  }
-  .qs .c { color: var(--dim); }
-  .qs .k { color: var(--emerald); }
-  .qs .s { color: var(--sky); }
-
-  /* ---------- facts ---------- */
-  .facts { margin-top: 26px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
-  .fact {
-    border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px;
-    background: var(--panel);
-  }
-  .fact .v {
-    font-family: var(--mono); font-size: 27px; font-weight: 700; letter-spacing: -0.02em;
-    background: linear-gradient(120deg, #e0f2fe, var(--sky));
-    -webkit-background-clip: text; background-clip: text; color: transparent;
-  }
-  .fact .k2 { font-size: 13.5px; color: var(--dim); margin-top: 6px; }
-
-  /* ---------- footer ---------- */
   .foot {
-    margin-top: 40px; padding-top: 24px; border-top: 1px solid var(--line);
+    margin-top: 40px; padding-top: 22px; border-top: 1px solid var(--line);
     display: flex; align-items: center; justify-content: space-between;
   }
   .repo { font-family: var(--mono); font-size: 19px; color: #dbeafe; }
-  .repo span { color: var(--dim); }
-  .license { font-size: 14px; color: var(--dim); font-family: var(--mono); }
+  .meta { font-family: var(--mono); font-size: 14px; color: var(--dim); }
 </style>
 </head>
 <body>
 <div class="wrap">
 
-  <!-- masthead -->
   <div class="chips">
     <span class="chip hot">TypeScript</span>
     <span class="chip">Node 18+</span>
     <span class="chip">纯 ESM</span>
     <span class="chip">MIT</span>
-    <span class="chip">单一运行时依赖（且仅用其类型）</span>
   </div>
 
   <h1>opencode-deveco</h1>
   <div class="tagline">在标准 opencode 里，用上华为 DevEco Code 的模型</div>
   <p class="lede">
-    把 <b>DevEco Code</b> 的模型能力 —— <b>GLM-5.3</b> / <b>GLM-5.1</b> / 视觉模型 ——
-    无侵入地接进 opencode、Claude Code 以及任何 OpenAI 兼容客户端。
-    一条本地代理，一个端口，不改 opencode 一行源码。
+    把 <b>DevEco Code</b> 的模型（<b>GLM-5.3</b> / <b>GLM-5.1</b> / 视觉模型）无侵入地接进
+    opencode、Claude Code 与任何 OpenAI 兼容客户端 —— 一条本地代理，一个端口。
   </p>
 
-  <!-- why -->
-  <div class="why">
-    <div class="h">为什么是「代理」而不是插件</div>
-    <p>
-      opencode 已发布的二进制不会加载外部插件的 auth hook。所以这个项目没走插件路线，
-      而是一条跑在本机的 HTTP 代理：opencode 把它当作普通 OpenAI 端点，
-      代理注入 DevEco 凭证后转发到华为。对外完全像一个标准模型服务。
-    </p>
-    <div class="flow">
-      <span class="node">opencode / Claude Code</span>
-      <span class="arrow">→</span>
-      <span class="node accent">本地代理 127.0.0.1:17128</span>
-      <span class="arrow">→</span>
-      <span class="node">DevEco Code（华为）</span>
-    </div>
-  </div>
-
-  <!-- capabilities -->
   <div class="sec"><span class="num">1</span><h2>核心能力</h2><span class="rule"></span></div>
   <div class="grid">
 
     <div class="card">
-      <h3><span class="ico">🔌</span>双协议对外</h3>
-      <p>同时提供 OpenAI 兼容端点 <code>/v2/chat/completions</code> 与 Anthropic 原生端点
-      <code>/anthropic/v1/messages</code>，流式与非流式都支持，工具调用、思考块、
-      图片往返完整转换。opencode 与 Claude Code 可以共用同一条代理。</p>
+      <h3>🔌 双协议对外</h3>
+      <p>同时提供 OpenAI 兼容端点与 Anthropic 原生端点，流式、非流式、工具调用、
+      思考块、图片往返完整转换，opencode 与 Claude Code 共用同一条代理。</p>
     </div>
 
     <div class="card g">
-      <h3><span class="ico">🖼️</span>识图自动路由</h3>
-      <p>文本模型收到图片会被上游拒绝，代理会<b>透明改道</b>到视觉模型
-      （Qwen3-VL）并把答案原样带回；下一轮无图时自动切回。哪些模型算"文本-only"
-      跟随云端 <code>input_modalities</code>，上游新增模型无需改代码。</p>
+      <h3>🖼️ 识图自动路由</h3>
+      <p>文本模型收到图片会被上游拒绝，代理<b>透明改道</b>视觉模型并把答案带回。
+      判定跟随云端 <code>input_modalities</code>，上游上新模型无需改代码。</p>
     </div>
 
     <div class="card">
-      <h3><span class="ico">🧠</span>思考不再混进正文</h3>
-      <p>DevEco 的 GLM 会把"自言自语"写进正文并以 <code>&lt;/think&gt;</code> 收尾。
-      代理请求上游把它放到独立通道：OpenAI 侧是 <code>reasoning_content</code>，
-      Anthropic 侧是标准 <code>thinking</code> block；历史里的残留也会被清理，
-      多轮不再累积污染。</p>
+      <h3>🧠 思考不混进正文</h3>
+      <p>思考走独立通道：OpenAI 侧返回 <code>reasoning_content</code>，Anthropic 侧返回标准
+      <code>thinking</code> block；历史里的残留自动清理，多轮不再累积污染。</p>
     </div>
 
     <div class="card a">
-      <h3><span class="ico">🎚️</span>思考档位如实生效</h3>
-      <p>云端为每个模型声明的档位（GLM-5.3 为 <code>low/high/max</code>）成为客户端可选项，
-      默认档随请求下发。客户端发出的越界档位会就近映射 —— 实测 <code>medium</code>
-      原本静默落到最重档，现在正确落在 high。该关思考时不擅自关，级别永远如实回传。</p>
+      <h3>🎚️ 思考档位如实生效</h3>
+      <p>云端声明的档位（<code>low/high/max</code>）成为客户端可选项，默认档随请求下发；
+      越界档位就近映射，思考级别永远如实回传、不擅自篡改。</p>
     </div>
 
     <div class="card g">
-      <h3><span class="ico">🔄</span>模型目录自动同步</h3>
-      <p>云端模型目录会落盘并在启动时注入客户端：新增模型自动出现在选择器里，
-      带上上下文长度、思考档位与模态。与手写配置合并（你的字段优先），
-      <code>small_model</code> 也跟随云端声明。</p>
+      <h3>🔄 模型目录自动同步</h3>
+      <p>云端目录落盘并在启动时注入：新增模型、上下文长度、思考档位、模态自动跟上，
+      小模型的选择也跟随云端声明。</p>
     </div>
 
     <div class="card">
-      <h3><span class="ico">🚦</span>串行排队与限流保护</h3>
-      <p>DevEco 按账号限制并发，代理默认<b>单并发</b>且 FIFO 排队，排队入场前冷却、
-      队列有上限（超出直接 429 让调用方退避），元数据接口不占用生成槽位。
-      长回合不会把后面的请求饿死。</p>
+      <h3>🚦 串行排队与限流保护</h3>
+      <p>上游按账号限并发，代理默认<b>单并发</b> FIFO 排队：队列有上限、超出回 429
+      让调用方退避，放行前冷却，长回合不饿死后续请求。</p>
     </div>
 
     <div class="card a">
-      <h3><span class="ico">🛡️</span>崩溃防护与守护</h3>
-      <p>客户端断连立即取消上游、并发槽位不泄漏、写坏 socket 不致命、
-      未捕获异常也不会带走进程；<code>npm start</code> 可交给守护进程，
-      退出后按退避自动重启。附 systemd / launchd / Windows 自启动脚本。</p>
+      <h3>🛡️ 崩溃防护与守护</h3>
+      <p>客户端断连即取消上游、异常不带走进程、并发槽位不泄漏；
+      守护进程按退避自动重启，附 Linux / macOS / Windows 自启动脚本。</p>
     </div>
 
     <div class="card g">
-      <h3><span class="ico">🧭</span>边界行为对齐官方</h3>
-      <p>区域、账号区域、实名状态三道门禁与官方客户端一致：不在服务区时给出明确
-      原因（而不是让用户对着上游超时猜），已实名账号零额外开销，
-      登录/刷新也有竞态护栏，登出后不会被在途请求"复活"。</p>
+      <h3>🧭 边界对齐官方</h3>
+      <p>区域、账号、实名三道门禁与官方客户端一致，给出可读原因而不是上游超时；
+      已实名账号零额外开销，登录与刷新带竞态护栏。</p>
     </div>
 
   </div>
 
-  <!-- quickstart -->
-  <div class="sec"><span class="num">2</span><h2>三步跑起来</h2><span class="rule"></span></div>
-  <div class="qs">
-    <div class="bar">
-      <span class="dot" style="background:#ff5f57"></span>
-      <span class="dot" style="background:#febc2e"></span>
-      <span class="dot" style="background:#28c840"></span>
-    </div>
-<pre><span class="c"># 1. 安装（含代理与自启动脚本）</span>
-<span class="k">npm</span> install -g opencode-deveco
-
-<span class="c"># 2. 起服务：守护进程 + 代理，监听 127.0.0.1:17128</span>
-<span class="k">npm</span> start
-
-<span class="c"># 3. 登录一次（浏览器 OAuth，之后自动续期）</span>
-<span class="k">curl</span> <span class="s">http://127.0.0.1:17128/v2/login</span>
-
-<span class="c"># 4. 用起来</span>
-<span class="k">opencode</span> run <span class="s">"say hi"</span> -m deveco/GLM-5.3</pre>
-  </div>
-
-  <!-- facts -->
-  <div class="facts">
-    <div class="fact"><div class="v">155</div><div class="k2">自动化测试</div></div>
-    <div class="fact"><div class="v">2 协议</div><div class="k2">OpenAI + Anthropic</div></div>
-    <div class="fact"><div class="v">0</div><div class="k2">额外 HTTP 依赖</div></div>
-    <div class="fact"><div class="v">3 平台</div><div class="k2">Linux · macOS · Windows</div></div>
-  </div>
-
-  <!-- footer -->
   <div class="foot">
     <div class="repo">wenyinos/opencode-deveco</div>
-    <div class="license">MIT License · 仅供个人合法使用</div>
+    <div class="meta">MIT License · 155 tests · 单一运行时依赖</div>
   </div>
 
 </div>
