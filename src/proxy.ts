@@ -37,6 +37,7 @@ import {
   MAINLAND_CHINA_ONLY_MESSAGE,
   regionBlocked,
 } from "./region-policy.js"
+import { checkRealNameGate } from "./access-gate.js"
 import { createLoginService, userInfoFromJwt, type RefreshResult, type UserInfo } from "./auth-login.js"
 import { JsonTokenStore } from "./token-store.js"
 import { getDevecoProviderConfig, resetModelCache } from "./models.js"
@@ -799,6 +800,36 @@ export class DevEcoProxy {
     return true
   }
 
+  /**
+   * Refuse the turn while the account has not passed HUAWEI real-name
+   * verification. Only consulted for an unverified account (see
+   * access-gate.ts), and the check may rotate the token pair — the session is
+   * kept in step when it does.
+   */
+  private async realNameRefusal(accessToken: string): Promise<string | null> {
+    const userInfo = this.session?.userInfo
+    if (!userInfo || userInfo.isRealName) return null
+
+    return checkRealNameGate({
+      userId: userInfo.userId,
+      accessToken,
+      verify: async () => {
+        const jwtToken = await this.tokenStore.load()
+        if (!jwtToken) return null
+        const refreshed = await this.loginService.refreshToken(jwtToken)
+        if (!refreshed) return null
+        const session = this.session
+        if (refreshed.isRealName && session?.userInfo) {
+          session.accessToken = refreshed.accessToken
+          session.refreshToken = refreshed.refreshToken
+          session.expiresAt = Date.now() + ACCESS_TOKEN_EXPIRES_MS
+          session.userInfo.isRealName = true
+        }
+        return refreshed.isRealName ?? null
+      },
+    })
+  }
+
   private async forwardChat(
     req: http.IncomingMessage,
     res: http.ServerResponse,
@@ -848,6 +879,14 @@ export class DevEcoProxy {
     }
 
     if (this.refuseOutsideRegion(res, "openai", true)) return
+
+    const realNameRefusal = await this.realNameRefusal(accessToken)
+    if (realNameRefusal) {
+      log.warn("proxy: request refused pending real-name verification")
+      return this.json(res, 403, {
+        error: { message: realNameRefusal, type: "invalid_request_error" },
+      })
+    }
 
     // Build the upstream URL. DevEco needs /no-stream in the path for
     // non-streaming requests:
@@ -1034,6 +1073,15 @@ export class DevEcoProxy {
     }
 
     if (this.refuseOutsideRegion(res, "anthropic", true)) return
+
+    const realNameRefusal = await this.realNameRefusal(accessToken)
+    if (realNameRefusal) {
+      log.warn("proxy: request refused pending real-name verification")
+      return this.json(res, 403, {
+        type: "error",
+        error: { type: "invalid_request_error", message: realNameRefusal },
+      })
+    }
 
     // Transform Anthropic → OpenAI
     const openaiReq = anthropicToOpenaiChat(anthropicReq)

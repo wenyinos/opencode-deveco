@@ -133,6 +133,9 @@ interface JwtPayload {
 export interface RefreshResult {
   accessToken: string
   refreshToken: string
+  /** Real-name status as of this refresh. The gate only asks for it when the
+   * cached status says "not verified", and a verified account never needs it. */
+  isRealName?: boolean
 }
 
 /** A login in progress: the URL to visit, and the eventual outcome. */
@@ -642,6 +645,7 @@ class LoginService {
       return {
         accessToken: result.userInfo.accessToken,
         refreshToken: result.userInfo.refreshToken ?? "",
+        isRealName: parseRealName(result.userInfo.realName),
       }
     } catch (err) {
       log.error(`refreshToken error: ${String(err)}`)
