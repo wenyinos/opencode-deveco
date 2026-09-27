@@ -395,6 +395,9 @@ behind each.
   is dropped from the queue (no upstream turn at all, and no cooldown charged to
   the requests behind it); graceful shutdown no longer hangs on long-lived
   streams (5s grace, then force-close).
+- **Turns run one at a time** — `DEVECO_MAX_CONCURRENCY` (default `1`) caps how
+  many upstream generations may run at once, so a burst queues in arrival order
+  instead of tripping DevEco's per-account throttle.
 - **Queued requests can cool down** — `DEVECO_QUEUE_COOLDOWN_SEC` (default `1`,
   fractions allowed; `0` switches it off) pauses that many seconds before a
   request that had to queue is admitted, so burst-adjacent turns don't hit the

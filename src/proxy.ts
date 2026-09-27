@@ -92,6 +92,24 @@ export function idleBudget(idleMs: number): {
 }
 
 /**
+ * Combine abort signals the way `AbortSignal.any` does. That API only exists
+ * from Node 18.17/20.3 on, and this package still supports Node 18, so the
+ * merge is done by hand. Sources are per-request objects that die with their
+ * request, so the listeners cannot accumulate.
+ */
+export function mergeAbortSignals(...signals: AbortSignal[]): AbortSignal {
+  const merged = new AbortController()
+  for (const signal of signals) {
+    if (signal.aborted) {
+      merged.abort(signal.reason)
+      break
+    }
+    signal.addEventListener("abort", () => merged.abort(signal.reason), { once: true })
+  }
+  return merged.signal
+}
+
+/**
  * How an `acquire` ended: `admitted` = slot granted (the caller then owes one
  * `release()`), `abandoned` = the caller gave up while queued (no slot, nothing
  * owed), `queue-full` = the queue was at capacity, so the request was refused
@@ -862,12 +880,14 @@ export class DevEcoProxy {
     )
 
     const budget = idleBudget(UPSTREAM_IDLE_TIMEOUT_MS)
-    const signal = AbortSignal.any([budget.signal, clientGone.signal])
 
     // Forward to DevEco and stream/passthrough the response back. The queue
     // slot must be released on EVERY path that reached upstream, including
     // fetch failures and the 401 retry — otherwise silent slot leaks build up.
     try {
+      // Built inside the try: a synchronous throw here must still reach the
+      // finally below, or the slot this turn just took would leak for good.
+      const signal = mergeAbortSignals(budget.signal, clientGone.signal)
       const upstream = await fetch(upstreamUrl, {
         method: "POST",
         headers,
@@ -901,7 +921,15 @@ export class DevEcoProxy {
         }
       }
 
-      await this.pipeResponse(responseToPipe, res, stream, { ...ctx, clientGone: signal }, budget.touch)
+      // `clientGone`, not the merged signal: only a hang-up should demote the
+      // log line, while an upstream idle timeout must stay an error.
+      await this.pipeResponse(
+        responseToPipe,
+        res,
+        stream,
+        { ...ctx, clientGone: clientGone.signal },
+        budget.touch,
+      )
     } finally {
       budget.done()
       // Hand the slot over only once DevEco confirms its queue slot is gone
@@ -1002,7 +1030,6 @@ export class DevEcoProxy {
     )
 
     const budget = idleBudget(UPSTREAM_IDLE_TIMEOUT_MS)
-    const signal = AbortSignal.any([budget.signal, clientGone.signal])
     const finishTurn = async (): Promise<void> => {
       budget.done()
       await this.exitQueue(convKey, chatId, upstreamModel, accessToken)
@@ -1011,6 +1038,9 @@ export class DevEcoProxy {
 
     let upstream: Response
     try {
+      // Same as the OpenAI path: built inside the try so a synchronous throw
+      // still runs the catch, which releases the slot.
+      const signal = mergeAbortSignals(budget.signal, clientGone.signal)
       upstream = await fetch(upstreamUrl, {
         method: "POST",
         headers,

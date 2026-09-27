@@ -3,7 +3,14 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { browserOpenCommand, parseJwt, parseRealName, userInfoFromJwt } from "./auth-login.js"
-import { ConcurrencyGate, conversationKey, DevEcoProxy, idleBudget, sessionKeyFromHeaders } from "./proxy.js"
+import {
+  ConcurrencyGate,
+  conversationKey,
+  DevEcoProxy,
+  idleBudget,
+  mergeAbortSignals,
+  sessionKeyFromHeaders,
+} from "./proxy.js"
 import { JsonTokenStore } from "./token-store.js"
 import { log, maxQueue, queueCooldownMs } from "./config.js"
 
@@ -162,6 +169,35 @@ describe("idleBudget", () => {
     b.done()
     await sleep(200)
     expect(b.signal.aborted).toBe(false)
+  })
+})
+
+describe("mergeAbortSignals", () => {
+  it("aborts as soon as any source aborts, carrying its reason", () => {
+    const first = new AbortController()
+    const second = new AbortController()
+    const merged = mergeAbortSignals(first.signal, second.signal)
+
+    expect(merged.aborted).toBe(false)
+    first.abort(new Error("upstream silent"))
+    expect(merged.aborted).toBe(true)
+    expect((merged.reason as Error).message).toBe("upstream silent")
+  })
+
+  it("is born aborted when a source already aborted", () => {
+    const gone = new AbortController()
+    gone.abort(new Error("client disconnected"))
+    const merged = mergeAbortSignals(gone.signal, new AbortController().signal)
+    expect(merged.aborted).toBe(true)
+    expect((merged.reason as Error).message).toBe("client disconnected")
+  })
+
+  it("never aborts a source that is still live", () => {
+    const first = new AbortController()
+    const second = new AbortController()
+    mergeAbortSignals(first.signal, second.signal)
+    first.abort()
+    expect(second.signal.aborted).toBe(false)
   })
 })
 

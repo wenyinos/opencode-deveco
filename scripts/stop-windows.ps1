@@ -17,9 +17,14 @@ if (Test-Path $PidFile) {
   $daemonPid = (Get-Content $PidFile -Raw -ErrorAction SilentlyContinue).Trim()
   if ($daemonPid -match '^\d+$') {
     $proc = Get-Process -Id ([int]$daemonPid) -ErrorAction SilentlyContinue
-    if ($proc) {
-      Stop-Process -Id $proc.Id -Force
-      Write-Host "Stopped supervisor (PID $($proc.Id))."
+    # Windows recycles pids quickly and an unclean shutdown leaves the file
+    # behind, so only a node process is treated as ours.
+    if ($proc -and $proc.ProcessName -eq "node") {
+      # /T takes the proxy child down too: Stop-Process -Force is a bare
+      # TerminateProcess, which neither forwards a signal nor walks the tree, so
+      # with a non-default -Port the proxy would outlive its supervisor.
+      taskkill /PID $proc.Id /T /F 2>&1 | Out-Null
+      Write-Host "Stopped supervisor (PID $($proc.Id)) and its proxy child."
       $stopped = $true
     }
   }

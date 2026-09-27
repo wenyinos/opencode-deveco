@@ -47,8 +47,11 @@ if ($existing) {
 
 # Start hidden. -WindowStyle Hidden = no window at all.
 $env:DEVECO_PROXY_PORT = "$Port"
+# The argument is quoted by hand: Start-Process does not quote a single
+# -ArgumentList value, so a project path containing a space would be split and
+# node would be handed a truncated module path.
 $proc = Start-Process -FilePath "node" `
-  -ArgumentList $EntryPath `
+  -ArgumentList "`"$EntryPath`"" `
   -WorkingDirectory $ProjectRoot `
   -WindowStyle Hidden `
   -RedirectStandardOutput $LogPath `
