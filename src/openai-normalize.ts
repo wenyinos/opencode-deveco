@@ -14,6 +14,14 @@
 // DevEco only knows the older `max_tokens`. `max_completion_tokens` is
 // ignored, which leaves the model free to generate up to its own default cap —
 // long enough for the non-streaming gateway to drop the connection.
+//
+// DevEco's GLM models think inline: the reasoning is written into `content` and
+// closed by a stray `</think>` (no opening tag), so clients render the model
+// talking to itself as part of the answer. Setting
+// `chat_template_kwargs.enable_thinking` makes the upstream report that
+// reasoning on `reasoning_content` instead, and an assistant message that still
+// carries such a scratchpad is cleaned on the way in. The thinking *level* is
+// never touched — these models cannot stop thinking upstream anyway.
 
 import { log } from "./config.js"
 
@@ -153,9 +161,73 @@ export function normalizeOpenAIReasoningEffort(
 }
 
 /**
- * Apply every DevEco chat-completions quirk in one pass: roles first (a
- * body-level enum), then the token cap, then tool_choice, which may narrow
- * `tools` and therefore has to run last.
+ * DevEco's GLM models think *inline*: the reasoning is written into `content`
+ * and closed by a stray `</think>` with no opening tag, so a client renders the
+ * model talking to itself as part of the answer. The upstream chat template
+ * routes that reasoning to `reasoning_content` instead when `enable_thinking`
+ * is set — verified with GLM-5.3 and GLM-5.1, and harmless for the VL fallback
+ * — and `anthropic-transform.ts` already maps `reasoning_content` onto a
+ * thinking block, so both wire protocols end up with clean content.
+ *
+ * This asks for the reasoning to be *reported* on the channel built for it. It
+ * is not a thinking switch: the level (`reasoning_effort`) passes through
+ * untouched, and these models cannot stop thinking upstream anyway
+ * (`enable_thinking:false` and `thinking:{type:"disabled"}` were both measured
+ * to have no effect on GLM-5.3). A client that set the flag itself keeps its
+ * choice.
+ */
+export function normalizeOpenAIThinkingSplit(
+  body: Record<string, unknown>,
+): BodyNormalization {
+  const existing = body.chat_template_kwargs
+  if (existing !== undefined && (typeof existing !== "object" || existing === null)) {
+    return { body, changed: false }
+  }
+  const kwargs = (existing as Record<string, unknown> | undefined) ?? {}
+  if ("enable_thinking" in kwargs) return { body, changed: false }
+
+  log.debug("proxy: asking upstream to report reasoning separately")
+  return {
+    body: { ...body, chat_template_kwargs: { ...kwargs, enable_thinking: true } },
+    changed: true,
+  }
+}
+
+/**
+ * A turn answered before this proxy requested a separate reasoning channel — or
+ * pasted back verbatim by a client — can leave `<reasoning></think>answer` in
+ * an assistant message. Sending that scratchpad upstream again wastes context
+ * and teaches the model that thinking out loud in `content` is the expected
+ * format, so only the answer after the last closing tag is kept.
+ */
+export function normalizeOpenAIAssistantThink(
+  body: Record<string, unknown>,
+): BodyNormalization {
+  const messages = body.messages
+  if (!Array.isArray(messages)) return { body, changed: false }
+
+  const CLOSE = "</think>"
+  let changed = false
+  const rewritten = messages.map((message) => {
+    if (!message || typeof message !== "object") return message
+    const msg = message as Record<string, unknown>
+    if (msg.role !== "assistant" || typeof msg.content !== "string") return message
+    const idx = msg.content.lastIndexOf(CLOSE)
+    if (idx < 0) return message
+    changed = true
+    return { ...msg, content: msg.content.slice(idx + CLOSE.length).trimStart() }
+  })
+  if (!changed) return { body, changed: false }
+
+  log.debug("proxy: stripped inline reasoning left in assistant history")
+  return { body: { ...body, messages: rewritten }, changed: true }
+}
+
+/**
+ * Apply every DevEco chat-completions quirk in one pass: message rewrites
+ * first (roles and leftover inline reasoning), then the token cap, then the
+ * thinking channel, then tool_choice, which may narrow `tools` and therefore
+ * has to run last.
  */
 export function normalizeOpenAIChatBody(
   body: Record<string, unknown>,
@@ -163,9 +235,11 @@ export function normalizeOpenAIChatBody(
   let current = body
   let changed = false
   for (const normalize of [
+    normalizeOpenAIAssistantThink,
     normalizeOpenAIDeveloperRole,
     normalizeOpenAIMaxTokens,
     normalizeOpenAIReasoningEffort,
+    normalizeOpenAIThinkingSplit,
     normalizeOpenAIToolChoice,
   ]) {
     const result = normalize(current)

@@ -395,6 +395,15 @@ behind each.
   is dropped from the queue (no upstream turn at all, and no cooldown charged to
   the requests behind it); graceful shutdown no longer hangs on long-lived
   streams (5s grace, then force-close).
+- **Reasoning no longer leaks into the answer** — DevEco's GLM models write
+  their thinking into `content` (closed by a stray `</think>`, with no opening
+  tag), so clients rendered the scratchpad as part of the reply. The proxy now
+  asks the upstream to report reasoning on its own channel: `reasoning_content`
+  on the OpenAI endpoint, a standard `thinking` block on the Anthropic one, with
+  clean content either way. Assistant messages that still carry such a
+  scratchpad are cleaned before forwarding, so pollution can't accumulate over
+  turns. The thinking *level* is untouched — `reasoning_effort` (and the
+  Anthropic thinking-budget mapping) passes through and still takes effect.
 - **Text-only detection follows the upstream config** — which models need the
   vision fallback is derived from the upstream `input_modalities` (cached with
   the model list for an hour), so a model the upstream adds is routed correctly

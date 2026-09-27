@@ -980,9 +980,12 @@ export class DevEcoProxy {
 
     // Transform Anthropic → OpenAI
     const openaiReq = anthropicToOpenaiChat(anthropicReq)
+    // Same DevEco quirk rewrites as the OpenAI path — this body was built here,
+    // not received from a client, so nothing else would apply them.
+    const normalized = normalizeOpenAIChatBody(openaiReq as unknown as Record<string, unknown>)
     // Same vision fallback as the OpenAI path, applied to the transformed body.
-    const routing = applyVisionRouting(openaiReq as unknown as Record<string, unknown>)
-    const openaiBody = JSON.stringify(routing?.body ?? openaiReq)
+    const routing = applyVisionRouting(normalized.body)
+    const openaiBody = JSON.stringify(routing?.body ?? normalized.body)
     const upstreamModel = routing?.upstreamModel ?? model
 
     const upstreamPath = isStream

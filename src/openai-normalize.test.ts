@@ -1,9 +1,11 @@
 import { describe, it, expect } from "vitest"
 import {
+  normalizeOpenAIAssistantThink,
   normalizeOpenAIChatBody,
   normalizeOpenAIDeveloperRole,
   normalizeOpenAIMaxTokens,
   normalizeOpenAIReasoningEffort,
+  normalizeOpenAIThinkingSplit,
   normalizeOpenAIToolChoice,
 } from "./openai-normalize.js"
 
@@ -199,9 +201,64 @@ describe("normalizeOpenAIChatBody", () => {
     expect(r.body.thinking).toEqual({ type: "disabled" })
   })
 
+  it("adds the reasoning-channel flag in the combined pass", () => {
+    const r = normalizeOpenAIChatBody({ messages: [{ role: "user", content: "hi" }] })
+    expect(r.changed).toBe(true)
+    expect(r.body.chat_template_kwargs).toEqual({ enable_thinking: true })
+  })
+
   it("reports a DevEco-clean body as unchanged", () => {
-    const body = { messages: [{ role: "user", content: "hi" }], max_tokens: 8 }
+    const body = {
+      messages: [{ role: "user", content: "hi" }],
+      max_tokens: 8,
+      chat_template_kwargs: { enable_thinking: true },
+    }
     const r = normalizeOpenAIChatBody(body)
+    expect(r.changed).toBe(false)
+    expect(r.body).toBe(body)
+  })
+})
+
+describe("normalizeOpenAIThinkingSplit", () => {
+  it("asks the upstream to report reasoning on its own channel", () => {
+    const r = normalizeOpenAIThinkingSplit({ messages: [] })
+    expect(r.changed).toBe(true)
+    expect(r.body.chat_template_kwargs).toEqual({ enable_thinking: true })
+  })
+
+  it("keeps other chat_template_kwargs, and an explicit client choice", () => {
+    const other = normalizeOpenAIThinkingSplit({ chat_template_kwargs: { foo: 1 } })
+    expect(other.body.chat_template_kwargs).toEqual({ foo: 1, enable_thinking: true })
+
+    const explicit = { chat_template_kwargs: { enable_thinking: false } }
+    const r = normalizeOpenAIThinkingSplit(explicit)
+    expect(r.changed).toBe(false)
+    expect(r.body).toBe(explicit)
+  })
+})
+
+describe("normalizeOpenAIAssistantThink", () => {
+  it("drops the scratchpad an earlier turn left in an assistant message", () => {
+    const r = normalizeOpenAIAssistantThink({
+      messages: [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: "Let me work this out.\n</think>42" },
+        { role: "user", content: "again" },
+      ],
+    })
+    expect(r.changed).toBe(true)
+    expect((r.body.messages as Array<{ content: string }>)[1].content).toBe("42")
+    expect((r.body.messages as Array<{ content: string }>)[0].content).toBe("hi")
+  })
+
+  it("leaves user messages and clean assistant turns alone", () => {
+    const body = {
+      messages: [
+        { role: "user", content: "what does </think> mean?" },
+        { role: "assistant", content: "A stray closing tag." },
+      ],
+    }
+    const r = normalizeOpenAIAssistantThink(body)
     expect(r.changed).toBe(false)
     expect(r.body).toBe(body)
   })

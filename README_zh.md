@@ -351,6 +351,7 @@ Claude Code 长会话跑几轮就报错的问题，以及登录相关的修复�
 - **Chat-Id 按对话保持稳定** —— 会话 key 锚定对话的**第一条用户消息**（不是 `messages[0]`——OpenAI 线格式里那是 system 提示词），因此即使 system 提示词每轮变化（当前时间、工作目录等易变内容）也不会每轮新建 DevEco 会话、触发上游限流。客户端可用 `x-session-id` / `x-deveco-session` / `x-session-affinity` 显式固定会话，或用 `DEVECO_SESSION_KEY_MODE=system-first` 改为按 system 区分会话（OpenAI 的 system 消息与 Anthropic 的顶层 `system` 字段都识别）。每轮结束时通过 `exitSessionQueue` 释放队列槽位。
 - **`logged_in` 如实上报** —— `/v2/status` 只要凭证存在且可静默刷新就返回 `logged_in:true`，而不是只在当前 access token 未过期时（它每 30 分钟过期一次）。
 - **断连即释放上游** —— 客户端断开 SSE/HTTP 连接会取消上游读取循环，不再把后端连接抽进死管道；排队等待期间就离开的客户端会被直接移出队列（不会启动上游轮次，也不再让后面的请求白付一次冷却）；优雅关停也不再被长连接卡死（5 秒宽限后强制关闭）。
+- **思考不再混进正文** —— DevEco 的 GLM 模型会把"自言自语"直接写进 `content`（以 `</think>` 收尾，没有开标签），客户端会把它当成回答的一部分。代理现在请求上游把思考放到独立通道：OpenAI 端点返回 `reasoning_content`，Anthropic 端点返回标准的 `thinking` block，正文保持干净；请求里仍带 `</think>` 的历史消息也会在转发前清理，避免污染逐轮累积。思考级别不受影响：`reasoning_effort`（含 Anthropic 的 thinking budget 映射）原样透传，实测 low/high 的思考长度差异照旧生效。
 - **识图判定跟随上游配置** —— 哪些模型需要识图转发，由上游 `modelConfig` 的 `input_modalities` 决定（随模型列表缓存 1 小时），上游新增或调整模型能力时无需改代码；模型配置不可用时回退内置列表。
 - **生成回合串行执行** —— `DEVECO_MAX_CONCURRENCY`（默认 `1`）限制同时在跑的上游生成回合数，突发请求按到达顺序排队，而不是去撞 DevEco 的按账号限流。
 - **排队请求有冷却** —— `DEVECO_QUEUE_COOLDOWN_SEC`（默认 `1`，可小数如 `0.5`；设 `0` 关闭）会在放行一个排队请求前暂停相应秒数，避免相邻回合连击后端。直接拿到空闲槽位的请求立即发出，且正在冷却的槽位保留给该排队者，后来者无法插队。
