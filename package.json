@@ -16,6 +16,7 @@
     "README_zh.md"
   ],
   "engines": {
+    "node": ">=20",
     "opencode": ">=1.0.0"
   },
   "scripts": {

@@ -31,7 +31,7 @@ opencode 插件（`src/plugin.ts`）保留作前向兼容：在**会**加载插�
 ## 前置条件
 
 - 已安装 [opencode](https://opencode.ai)
-- Node 18+
+- Node 20+
 - **中国大陆**站点的华为账号
 
 ---
@@ -49,7 +49,7 @@ npm run test           # 运行测试
 npm run lint           # 检查代码风格
 ```
 
-构建产物是 `dist/proxy.js`（代理入口）与 `scripts/`（各平台自启动脚本）。运行代理需要 Node 18+；`npm test` 需要 Node 20+（vitest 4 用到了 Node 18 没有的 API，代理本身不受影响）。
+构建产物是 `dist/proxy.js`（代理入口）与 `scripts/`（各平台自启动脚本）。
 
 ### 2. 让 opencode 指向代理
 
