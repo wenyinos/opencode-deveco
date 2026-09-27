@@ -404,10 +404,31 @@ behind each.
   scratchpad are cleaned before forwarding, so pollution can't accumulate over
   turns. The thinking *level* is untouched — `reasoning_effort` (and the
   Anthropic thinking-budget mapping) passes through and still takes effect.
+- **Reasoning tiers are switchable** — the tiers the cloud declares per model
+  (GLM-5.3: `low/high/max`, default `high`) become opencode model variants
+  (`Ctrl+T`) and the declared default rides every request. A client tier outside
+  that list is snapped onto the nearest declared one: measured, GLM-5.3
+  `medium` used to land on the *heaviest* tier (352 chars of reasoning against
+  103 for `high`) and now lands on `high`. A model that declares no tiers
+  (GLM-5.1) is left alone, exactly as the official client leaves it.
+- **The model list reaches opencode by itself** — a successful fetch is
+  persisted (`<config>/opencode-deveco/models.json`, 0600, atomic write) and
+  injected at startup, so the picker lists every cloud model with its context
+  limit, tiers and modalities; models already written into `opencode.json` are
+  merged (your fields win, cloud metadata fills the rest). `small_model`
+  follows the cloud as well.
 - **Text-only detection follows the upstream config** — which models need the
   vision fallback is derived from the upstream `input_modalities` (cached with
   the model list for an hour), so a model the upstream adds is routed correctly
   without a code change; a built-in list still covers cold starts.
+- **Region and identity gates, as the official client** — a European timezone
+  (including the Russian/Central-Asian zones the upstream groups with it) gets
+  `451` with the official wording, a non-China account gets `403`, and an
+  account without HUAWEI real-name verification is told to complete it instead
+  of failing upstream; verified accounts pay nothing extra.
+- **Refresh/logout race guards** — signing out invalidates a login exchange
+  still in flight, so tokens can no longer be written back after a logout, and
+  a refresh re-checks that the stored jwtToken has not changed.
 - **Turns run one at a time** — `DEVECO_MAX_CONCURRENCY` (default `1`) caps how
   many upstream generations may run at once, so a burst queues in arrival order
   instead of tripping DevEco's per-account throttle.
