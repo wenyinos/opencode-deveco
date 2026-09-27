@@ -1,5 +1,7 @@
 # opencode-deveco
 
+[![CI](https://github.com/wenyinos/opencode-deveco/actions/workflows/ci.yml/badge.svg)](https://github.com/wenyinos/opencode-deveco/actions/workflows/ci.yml)
+
 English | **[简体中文](./README_zh.md)**
 
 Use **DevEco Code** (Huawei HarmonyOS GLM models) from standard [opencode](https://opencode.ai),
@@ -46,27 +48,17 @@ the proxy isn't needed. On current opencode, **the proxy is the live path**.
 
 ### 1. Install
 
-**npm** (stable releases; includes the OS autostart scripts):
-
-```bash
-npm install -g opencode-deveco     # or: npm install opencode-deveco
-# the proxy lives at:  $(npm root -g)/opencode-deveco/dist/proxy.js
-# autostart scripts:   $(npm root -g)/opencode-deveco/scripts/
-```
-
-**From source** (development / bleeding edge):
-
 ```bash
 git clone <this-repo> opencode-deveco
 cd opencode-deveco
-npm install
+npm install            # build dependencies
 npm run build          # produces dist/
 npm run test           # run tests
 npm run lint           # check code style
 ```
 
-Either way you need a `dist/proxy.js` to run and a `scripts/` folder with the
-OS autostart files — the npm package ships both.
+The build yields `dist/proxy.js` (the proxy entry point) and a `scripts/`
+folder with the OS autostart files.
 
 ### 2. Point opencode at the proxy
 
@@ -147,8 +139,7 @@ nohup node dist/proxy.js > proxy.log 2>&1 &
 
 ```bash
 mkdir -p ~/.config/systemd/user
-# npm install:  cp "$(npm root -g)/opencode-deveco/scripts/opencode-deveco.service" ~/.config/systemd/user/
-# from source:  cp scripts/opencode-deveco.service ~/.config/systemd/user/
+cp scripts/opencode-deveco.service ~/.config/systemd/user/
 # edit ExecStart / WorkingDirectory in the copied file to your install path
 systemctl --user daemon-reload
 systemctl --user enable --now opencode-deveco
@@ -164,8 +155,7 @@ journalctl --user -u opencode-deveco -f   # follow logs
 
 ```bash
 mkdir -p ~/Library/LaunchAgents
-# npm install:  cp "$(npm root -g)/opencode-deveco/scripts/com.opencode-deveco.proxy.plist" ~/Library/LaunchAgents/
-# from source:  cp scripts/com.opencode-deveco.proxy.plist ~/Library/LaunchAgents/
+cp scripts/com.opencode-deveco.proxy.plist ~/Library/LaunchAgents/
 # edit the node / project / log paths in the copied file
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.opencode-deveco.proxy.plist
 tail -f ~/Library/Logs/opencode-deveco.log   # follow logs

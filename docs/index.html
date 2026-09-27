@@ -215,7 +215,8 @@
           <span class="dot" style="background:#28c840"></span>
           <span class="title">三步跑起来</span>
         </div>
-<pre><span class="k">npm</span> install -g opencode-deveco
+<pre><span class="k">git</span> clone https://github.com/wenyinos/opencode-deveco && <span class="k">cd</span> opencode-deveco
+<span class="k">npm</span> install && <span class="k">npm</span> run build
 <span class="k">npm</span> start                     <span class="c"># 守护进程 + 代理，127.0.0.1:17128</span>
 <span class="k">curl</span> <span class="s">http://127.0.0.1:17128/v2/login</span>   <span class="c"># 浏览器登录一次</span></pre>
       </div>
@@ -325,8 +326,9 @@
           <span class="dot" style="background:#28c840"></span>
           <span class="title">完整流程</span>
         </div>
-<pre><span class="c"># 1. 安装（含代理与自启动脚本）</span>
-<span class="k">npm</span> install -g opencode-deveco
+<pre><span class="c"># 1. 获取代码并构建</span>
+<span class="k">git</span> clone https://github.com/wenyinos/opencode-deveco
+<span class="k">cd</span> opencode-deveco && <span class="k">npm</span> install && <span class="k">npm</span> run build
 
 <span class="c"># 2. 起服务：守护进程 + 代理，监听 127.0.0.1:17128</span>
 <span class="k">npm</span> start

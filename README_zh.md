@@ -1,5 +1,7 @@
 # opencode-deveco
 
+[![CI](https://github.com/wenyinos/opencode-deveco/actions/workflows/ci.yml/badge.svg)](https://github.com/wenyinos/opencode-deveco/actions/workflows/ci.yml)
+
 **[English](./README.md)** | 简体中文
 
 在普通 [opencode](https://opencode.ai) 中使用 **DevEco Code**（华为 HarmonyOS GLM 系列模型），用华为账号登录。
@@ -38,26 +40,16 @@ opencode 插件（`src/plugin.ts`）保留作前向兼容：在**会**加载插�
 
 ### 1. 安装
 
-**npm 安装**（稳定版，自带各平台自启动脚本）：
-
-```bash
-npm install -g opencode-deveco     # 或：npm install opencode-deveco
-# 代理位于：  $(npm root -g)/opencode-deveco/dist/proxy.js
-# 自启动脚本：$(npm root -g)/opencode-deveco/scripts/
-```
-
-**源码安装**（开发 / 尝鲜）：
-
 ```bash
 git clone <this-repo> opencode-deveco
 cd opencode-deveco
-npm install
+npm install            # 安装构建依赖
 npm run build          # 生成 dist/
 npm run test           # 运行测试
 npm run lint           # 检查代码风格
 ```
 
-两种方式都会得到可运行的 `dist/proxy.js` 和含自启动文件的 `scripts/` 目录——npm 包两者都随包发布。
+构建产物是 `dist/proxy.js`（代理入口）与 `scripts/`（各平台自启动脚本）。
 
 ### 2. 让 opencode 指向代理
 
@@ -131,8 +123,7 @@ nohup node dist/proxy.js > proxy.log 2>&1 &
 
 ```bash
 mkdir -p ~/.config/systemd/user
-# npm 安装：  cp "$(npm root -g)/opencode-deveco/scripts/opencode-deveco.service" ~/.config/systemd/user/
-# 源码安装：  cp scripts/opencode-deveco.service ~/.config/systemd/user/
+cp scripts/opencode-deveco.service ~/.config/systemd/user/
 # 编辑复制后的文件里的 ExecStart / WorkingDirectory 为你的实际安装路径
 systemctl --user daemon-reload
 systemctl --user enable --now opencode-deveco
@@ -146,8 +137,7 @@ journalctl --user -u opencode-deveco -f   # 实时看日志
 
 ```bash
 mkdir -p ~/Library/LaunchAgents
-# npm 安装：  cp "$(npm root -g)/opencode-deveco/scripts/com.opencode-deveco.proxy.plist" ~/Library/LaunchAgents/
-# 源码安装：  cp scripts/com.opencode-deveco.proxy.plist ~/Library/LaunchAgents/
+cp scripts/com.opencode-deveco.proxy.plist ~/Library/LaunchAgents/
 # 编辑复制后的文件里的 node / 项目 / 日志路径
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.opencode-deveco.proxy.plist
 tail -f ~/Library/Logs/opencode-deveco.log   # 实时看日志
