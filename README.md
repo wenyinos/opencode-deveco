@@ -58,7 +58,9 @@ npm run lint           # check code style
 ```
 
 The build yields `dist/proxy.js` (the proxy entry point) and a `scripts/`
-folder with the OS autostart files.
+folder with the OS autostart files. Running the proxy needs Node 18+, while
+`npm test` needs Node 20+ (vitest 4 uses APIs Node 18 lacks — the proxy itself
+does not).
 
 ### 2. Point opencode at the proxy
 

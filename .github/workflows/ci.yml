@@ -35,5 +35,19 @@ jobs:
       - name: Build
         run: npm run build
 
+      # vitest 4 (via rolldown) needs node:util.styleText, a Node 20.12+ API,
+      # so the suite cannot start on 18 — but the proxy itself must, which is
+      # what the advertised "Node 18+" claim is about. Prove that instead.
       - name: Tests
+        if: matrix.node != '18.x'
         run: npm test
+
+      - name: Runtime smoke test (Node 18)
+        if: matrix.node == '18.x'
+        run: |
+          node dist/proxy.js &
+          for _ in $(seq 1 20); do
+            curl -sf http://127.0.0.1:17128/v2/status && break
+            sleep 0.5
+          done
+          kill %1
