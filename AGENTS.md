@@ -1,6 +1,6 @@
 # AGENTS.md
 
-OpenCode 会话指引。与 `CLAUDE.md` 内容同源——更新关键约定时两处需同步。详细用户文档见 `README.md` / `README_zh.md`。
+OpenCode 会话指引（本仓库唯一的 agent 指令文件）。详细用户文档见 `README.md` / `README_zh.md`。
 
 ## 常用命令
 
