@@ -1,6 +1,6 @@
 {
   "name": "opencode-deveco",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "OpenCode plugin that brings DevEco Code (Huawei) account login and model access to standard opencode.",
   "type": "module",
   "license": "MIT",
@@ -29,7 +29,8 @@
     "clean": "node -e \"import('fs').then(f=>f.rmSync('dist',{recursive:true,force:true}))\""
   },
   "dependencies": {
-    "@opencode-ai/plugin": "latest"
+    "@opencode-ai/plugin": "latest",
+    "undici": "^6.29.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

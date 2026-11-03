@@ -20,6 +20,9 @@ import {
   type LoginConfig,
   log,
 } from "./config.js"
+import { envFetch } from "./env-fetch.js"
+import { describeNetworkError } from "./network-error.js"
+import { saveCountryRegion } from "./country-region.js"
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -83,6 +86,19 @@ interface CallbackData {
  * reject requests that do not look like a browser. */
 const LOGIN_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+/**
+ * Auth-server fetch with transport failures translated into an actionable
+ * message. The raw error remains the cause and is logged by the caller.
+ */
+async function authFetch(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await envFetch(url, init)
+  } catch (err) {
+    const hint = describeNetworkError(err, url)
+    throw hint ? new Error(hint, { cause: err }) : err
+  }
+}
 
 /**
  * Read a login-server response as JSON, failing with something readable when a
@@ -485,6 +501,15 @@ class LoginService {
       await this.tokenStore.save(jwtToken)
       this.userInfo = userInfo
 
+      // Same convenience side effect as the upstream client: DevEco Studio
+      // reads this file to share the user's country setting. A failure must
+      // never turn a successful login into a failed one.
+      try {
+        await saveCountryRegion(userInfo.countryCode)
+      } catch (err) {
+        log.warn("failed to write country region file", { error: String(err) })
+      }
+
       return { success: true, userInfo, jwtToken }
     } catch (err) {
       return toLoginFailure(err)
@@ -580,7 +605,7 @@ class LoginService {
       appid: this.config.appId,
     })
     const url = `${this.config.baseUrl}/${this.config.tempTokenCheckUrl}?${params}`
-    const res = await fetch(url, {
+    const res = await authFetch(url, {
       signal: AbortSignal.timeout(20_000),
       headers: { "User-Agent": LOGIN_USER_AGENT, "accept-language": "zh-CN" },
     })
@@ -604,6 +629,14 @@ class LoginService {
       log.error("invalid jwtToken: missing userInfo", { status: tokenInfo.status })
       throw new Error("Invalid jwtToken: missing userInfo")
     }
+    // The upstream client refuses a non-China account during login; doing the
+    // same here gives the user an actionable message instead of a successful
+    // sign-in followed by a 403 on the first inference request.
+    const nationalCode = tokenInfo.userInfo.nationalCode?.trim().toUpperCase()
+    if (nationalCode && nationalCode !== "CN") {
+      throw new UnsupportedRegionError("Unsupported account region")
+    }
+
     const jwtPayload = parseJwt(jwtToken)
     const userInfo: UserInfo = {
       userId: jwtPayload.userId,
@@ -614,7 +647,7 @@ class LoginService {
       // The account's real region, normalised the way the upstream login
       // service does. Hardcoding "CN" here would let a non-China account
       // through the region gate and fail upstream instead.
-      countryCode: tokenInfo.userInfo.nationalCode?.trim().toUpperCase() || "CN",
+      countryCode: nationalCode || "CN",
       language: "zh_CN",
       isRealName: parseRealName(tokenInfo.userInfo.realName),
     }
@@ -623,7 +656,7 @@ class LoginService {
 
   private async checkJwtToken(jwtToken: string): Promise<TokenCheckResponse> {
     const url = `${this.config.baseUrl}/${this.config.jwtTokenCheckUrl}`
-    const res = await fetch(url, {
+    const res = await authFetch(url, {
       signal: AbortSignal.timeout(20_000),
       headers: { refresh: "false", jwtToken, "User-Agent": LOGIN_USER_AGENT, "accept-language": "zh-CN" },
     })
@@ -650,7 +683,7 @@ class LoginService {
 
     const url = `${this.config.baseUrl}/${this.config.jwtTokenCheckUrl}`
     try {
-      const res = await fetch(url, {
+      const res = await authFetch(url, {
         signal: AbortSignal.timeout(20_000),
         headers: { refresh: "true", jwtToken, "User-Agent": LOGIN_USER_AGENT, "accept-language": "zh-CN" },
       })

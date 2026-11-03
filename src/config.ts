@@ -128,11 +128,11 @@ export function queueCooldownMs(): number {
 /**
  * Consent for the "improve DevEco tools" telemetry flag, sent as
  * `X-DevEco-Improvement-Enabled` on every inference request. The upstream
- * client reads its own privacy setting and defaults to on; here the default is
- * the same and `DEVECO_TOOL_IMPROVEMENT=0` turns it off.
+ * client treats an account that has not opted in as a refusal; this test flag
+ * matches that default and `DEVECO_TOOL_IMPROVEMENT=1` opts in.
  */
 export function toolImprovementEnabled(): boolean {
-  return process.env.DEVECO_TOOL_IMPROVEMENT !== "0"
+  return process.env.DEVECO_TOOL_IMPROVEMENT === "1"
 }
 
 /** accessToken lifetime in ms (30 min, matching deveco-code). */
@@ -223,6 +223,13 @@ export const DEVECO_DEFAULTS = {
     api: DEVECO_API_BASE,
     env: [] as string[],
     models: {
+      "GLM-5.3": {
+        name: "GLM-5.3",
+        reasoning: true,
+        tool_call: true,
+        limit: { context: 202752, output: 131072 },
+        modalities: { input: ["text"], output: ["text"] },
+      },
       "GLM-5.1": {
         name: "GLM-5.1",
         reasoning: true,
@@ -230,8 +237,8 @@ export const DEVECO_DEFAULTS = {
         limit: { context: 202752, output: 131072 },
         modalities: { input: ["text"], output: ["text"] },
       },
-      "Qwen2.5-VL-72B": {
-        name: "Qwen2.5-VL-72B",
+      "Qwen3_VL_235B_A22B_Instruct": {
+        name: "Qwen3_VL_235B_A22B_Instruct",
         limit: { context: 32768, output: 8192 },
         modalities: { input: ["text", "image"], output: ["text"] },
       },
@@ -239,8 +246,8 @@ export const DEVECO_DEFAULTS = {
   } satisfies ProviderInfo,
   taskDefaultModelMap: {
     small_model: "GLM-5.1",
-    ui_verification: "Qwen2.5-VL-72B",
-    blacklist: "Qwen2.5-VL-72B",
+    ui_verification: "Qwen3_VL_235B_A22B_Instruct",
+    blacklist: "Qwen3_VL_235B_A22B_Instruct",
   } as Record<string, string>,
 } as const
 

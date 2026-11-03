@@ -21,12 +21,14 @@ const FAKE_JWT = [
 
 describe("login generation guard", () => {
   const OLD_CONFIG_DIR = process.env.OPENCODE_CONFIG_DIR
+  const OLD_REGION_DIR = process.env.DEVECO_COUNTRY_REGION_DIR
   let tmpDir: string
   let originalFetch: typeof fetch
 
   const setup = () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-deveco-login-"))
     process.env.OPENCODE_CONFIG_DIR = tmpDir
+    process.env.DEVECO_COUNTRY_REGION_DIR = path.join(tmpDir, "deveco")
     originalFetch = globalThis.fetch
   }
 
@@ -34,6 +36,8 @@ describe("login generation guard", () => {
     globalThis.fetch = originalFetch
     if (OLD_CONFIG_DIR === undefined) delete process.env.OPENCODE_CONFIG_DIR
     else process.env.OPENCODE_CONFIG_DIR = OLD_CONFIG_DIR
+    if (OLD_REGION_DIR === undefined) delete process.env.DEVECO_COUNTRY_REGION_DIR
+    else process.env.DEVECO_COUNTRY_REGION_DIR = OLD_REGION_DIR
     fs.rmSync(tmpDir, { recursive: true, force: true })
   })
 
@@ -115,6 +119,41 @@ describe("login generation guard", () => {
     const outcome = await result
     expect(outcome.success).toBe(true)
     expect(await store.load()).toBe(FAKE_JWT)
+
+    await callback
+  }, 20_000)
+
+  it("refuses a non-China account at login instead of failing on first use", async () => {
+    setup()
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes("temptoken/check")) return new Response(FAKE_JWT, { status: 200 })
+      if (url.includes("jwToken/check")) {
+        return new Response(
+          JSON.stringify({
+            status: true,
+            userInfo: { accessToken: "at", refreshToken: "rt", nationalCode: "US", realName: true },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        )
+      }
+      return new Response("{}", { status: 404 })
+    }) as typeof fetch
+
+    const store = new JsonTokenStore()
+    const service = createLoginService(store)
+    const { url, result } = await service.startLogin({ openBrowser: false })
+
+    const parsed = new URL(url)
+    const callback = originalFetch(
+      `http://127.0.0.1:${parsed.searchParams.get("port")}/callback` +
+        `?code=${parsed.searchParams.get("code")}&tempToken=tt&siteId=1`,
+    ).catch(() => undefined)
+
+    const outcome = await result
+    expect(outcome.success).toBe(false)
+    expect(outcome.unsupportedRegion).toBe(true)
+    expect(await store.load()).toBeNull()
 
     await callback
   }, 20_000)

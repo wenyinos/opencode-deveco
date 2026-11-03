@@ -9,6 +9,13 @@ export default defineConfig({
     // mkdtemp and override this.
     env: {
       OPENCODE_CONFIG_DIR: "/tmp/opencode-deveco-vitest-config",
+      DEVECO_COUNTRY_REGION_DIR: "/tmp/opencode-deveco-vitest-region",
+      // Tests stub the global fetch; an inherited corporate proxy setting
+      // would send envFetch through undici and bypass every stub.
+      HTTP_PROXY: "",
+      HTTPS_PROXY: "",
+      http_proxy: "",
+      https_proxy: "",
     },
   },
 })

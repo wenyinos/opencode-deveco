@@ -27,8 +27,10 @@ opencode  ──►  http://127.0.0.1:17128/v2  (this proxy)
 ```
 
 The proxy handles: Huawei OAuth login, access-token caching & 30-min refresh,
-header injection, and streaming/non-streaming forwarding. Verified end-to-end
-against opencode `1.17.6` and `1.18.x`.
+header injection, and streaming/non-streaming forwarding. Outgoing requests
+(login, token refresh, model list, inference) honour `HTTP_PROXY` /
+`HTTPS_PROXY` / `NO_PROXY`, so corporate proxies need no extra setup. Verified
+end-to-end against opencode `1.17.6` and `1.18.x`.
 
 The opencode plugin (`src/plugin.ts`) is kept for forward-compatibility: on
 opencode versions that *do* load plugin auth, its `auth.loader` takes over and
@@ -209,13 +211,14 @@ tunnel is the intended way in — don't expose the port instead.
 ## Verify
 
 ```bash
-opencode models                         # should list deveco/GLM-5.1
-opencode run "say hi" -m deveco/GLM-5.1 # real request through the proxy
+opencode models                           # should list deveco/GLM-5.1 and deveco/GLM-5.3
+opencode run "say hi" -m deveco/GLM-5.1  # real request through the proxy
 ```
 
-> The model id is **`GLM-5.1`** (what DevEco's backend actually advertises). If
-> you see `ProviderModelNotFoundError` with `suggestions: ["GLM-5.1"]`, you used
-> the old `glm-5` name — switch to `GLM-5.1`.
+> The model ids are **`GLM-5.1` / `GLM-5.3`** (what DevEco's backend actually
+> advertises). If you see `ProviderModelNotFoundError` with
+> `suggestions: ["GLM-5.1"]`, you used the old `glm-5` name — switch to
+> `GLM-5.1`.
 
 ---
 
@@ -342,6 +345,7 @@ Verbosity via env: `DEVECO_LOG_LEVEL=debug|info|warn|error` (default `info`).
 |---|---|---|
 | `accessToken` (30 min) | in-memory in the proxy | auto-refreshed on the next request |
 | `jwtToken` (long-lived refresh credential) | `~/.config/opencode/opencode-deveco/jwt.json` | plain JSON, `0600`; override dir with `XDG_CONFIG_HOME`/`OPENCODE_CONFIG_DIR` |
+| country/region (not a credential) | `~/.config/deveco/country.region.xml` | written on a successful login for DevEco Studio; atomic write, failures only logged |
 
 ### Do I need to log in again when the token expires / after a reboot?
 
@@ -382,6 +386,23 @@ Long Claude Code sessions used to break after a few rounds; the fixes for that
 and for login are the recent bulk of the work. `git log` has the reasoning
 behind each.
 
+- **Corporate proxies work** — `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` are
+  honoured on every outgoing request (login, token refresh, model list,
+  inference) through undici. `NO_PROXY` is respected; no extra setup behind a
+  company proxy.
+- **Improvement telemetry is opt-in** — `X-DevEco-Improvement-Enabled` is now
+  `false` unless `DEVECO_TOOL_IMPROVEMENT=1`, matching the official client's
+  "no consent means no" contract.
+- **Non-China accounts are refused at login** — a non-CN `nationalCode` fails
+  the login with an actionable message, instead of a successful sign-in that
+  breaks on the first turn.
+- **Country/region file for DevEco Studio** — a successful login writes
+  `~/.config/deveco/country.region.xml` (atomic write, Windows-sharing retry);
+  a failed write is logged and never turns a successful login into a failed one.
+- **Readable network failures** — DNS, proxy, TLS and connection failures now
+  say what to check instead of surfacing a bare `fetch failed`.
+- **Static fallback refreshed** — when the dynamic catalog cannot be fetched,
+  the fallback list now includes `GLM-5.3` alongside `GLM-5.1`.
 - **Idle-based upstream timeout** — a turn is cut only after DevEco goes *silent*
   for 120s, instead of a 60s cap on its total length that killed long
   conversations. Interrupted streams now emit a real Anthropic `error` event

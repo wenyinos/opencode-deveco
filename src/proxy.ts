@@ -49,6 +49,7 @@ import {
 } from "./anthropic-transform.js"
 import { applyVisionRouting } from "./vision-routing.js"
 import { normalizeOpenAIChatBody } from "./openai-normalize.js"
+import { envFetch } from "./env-fetch.js"
 
 const DEVECO_ORIGIN = new URL(DEVECO_API_BASE).origin // https://cn.devecostudio.huawei.com
 const DEVECO_API_PREFIX = new URL(DEVECO_API_BASE).pathname.replace(/\/$/, "") // /sse/codeGenie/maas/v2
@@ -496,7 +497,7 @@ export class DevEcoProxy {
     }
     const attempt = async (retriesLeft: number): Promise<void> => {
       try {
-        const r = await fetch(url, {
+        const r = await envFetch(url, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -986,7 +987,7 @@ export class DevEcoProxy {
       // Built inside the try: a synchronous throw here must still reach the
       // finally below, or the slot this turn just took would leak for good.
       const signal = mergeAbortSignals(budget.signal, clientGone.signal)
-      const upstream = await fetch(upstreamUrl, {
+      const upstream = await envFetch(upstreamUrl, {
         method: "POST",
         headers,
         body: bodyInit,
@@ -1009,7 +1010,7 @@ export class DevEcoProxy {
             headers.Authorization = `Bearer ${refreshed.accessToken}`
             log.warn("upstream 401 → refreshed token, retrying once")
             budget.touch()
-            responseToPipe = await fetch(upstreamUrl, {
+            responseToPipe = await envFetch(upstreamUrl, {
               method: "POST",
               headers,
               body: bodyInit,
@@ -1158,7 +1159,7 @@ export class DevEcoProxy {
       // Same as the OpenAI path: built inside the try so a synchronous throw
       // still runs the catch, which releases the slot.
       const signal = mergeAbortSignals(budget.signal, clientGone.signal)
-      upstream = await fetch(upstreamUrl, {
+      upstream = await envFetch(upstreamUrl, {
         method: "POST",
         headers,
         body: openaiBody,
@@ -1179,7 +1180,7 @@ export class DevEcoProxy {
             headers.Authorization = `Bearer ${refreshed.accessToken}`
             log.warn("anthropic upstream 401 → refreshed token, retrying once")
             budget.touch()
-            upstream = await fetch(upstreamUrl, {
+            upstream = await envFetch(upstreamUrl, {
               method: "POST",
               headers,
               body: openaiBody,

@@ -85,6 +85,8 @@ npm run lint           # 检查代码风格
 
 代理默认监听 `127.0.0.1:17128`。用 `DEVECO_PROXY_PORT=<端口>` 覆盖（并同步修改第 2 步的 `baseURL`）。
 
+出站请求（登录、token 刷新、模型列表、推理）会读取 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`，企业代理环境下无需额外配置。
+
 **前台运行**（首次运行 / 调试首选 —— 日志实时打印到终端）：
 
 ```bash
@@ -188,11 +190,11 @@ ssh -L 10101:127.0.0.1:10101 -L 17128:127.0.0.1:17128 user@server
 ## 验证
 
 ```bash
-opencode models                           # 应能看到 deveco/GLM-5.1
+opencode models                           # 应能看到 deveco/GLM-5.1 和 deveco/GLM-5.3
 opencode run "say hi" -m deveco/GLM-5.1   # 通过代理发真实请求
 ```
 
-> 模型 id 是 **`GLM-5.1`**（DevEco 后端实际下发的名字）。如果看到
+> 模型 id 是 **`GLM-5.1` / `GLM-5.3`**（DevEco 后端实际下发的名字）。如果看到
 > `ProviderModelNotFoundError` 且 `suggestions: ["GLM-5.1"]`，说明你用了老的
 > `glm-5` 名字 —— 改成 `GLM-5.1` 即可。
 
@@ -234,7 +236,7 @@ opencode run "say hi" -m deveco/GLM-5.1   # 通过代理发真实请求
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `DEVECO_VISION_MODEL` | `Qwen3_VL_235B_A22B_Instruct` | 识图兜底模型 |
-| `DEVECO_TOOL_IMPROVEMENT` | `1` | 是否随推理请求发送 `X-DevEco-Improvement-Enabled`（与官方客户端的隐私开关对应），设 `0` 关闭 |
+| `DEVECO_TOOL_IMPROVEMENT` | `0` | 是否随推理请求发送 `X-DevEco-Improvement-Enabled`（对齐官方客户端“未同意即 false”），设 `1` 显式开启 |
 | `DEVECO_TEXT_ONLY_MODELS` | 自动（按上游 `input_modalities`） | 视为纯文本的模型，逗号分隔；显式设置时以此为准，模型配置不可用时回退内置 `GLM-5.1,GLM-5.3` |
 | `DEVECO_MAX_CONCURRENCY` | `1` | 允许同时在跑的生成回合数，超出部分按到达顺序排队（默认串行）；元数据接口（`/status`、`/models`、`/login`、`/logout`）不参与排队 |
 | `DEVECO_QUEUE_COOLDOWN_SEC` | `1` | 排队请求被放行前的冷却秒数（可小数如 `0.5`）；直接拿到空闲槽位的请求立即发出、不冷却，设 `0` 关闭 |
@@ -322,6 +324,7 @@ export ANTHROPIC_MODEL=GLM-5.1
 |---|---|---|
 | `accessToken`（30 分钟） | 代理内存中 | 下次请求自动刷新 |
 | `jwtToken`（长效刷新凭证） | `~/.config/opencode/opencode-deveco/jwt.json` | 明文 JSON，`0600`；用 `XDG_CONFIG_HOME`/`OPENCODE_CONFIG_DIR` 覆盖目录 |
+| 国家/地区（非凭证） | `~/.config/deveco/country.region.xml` | 登录成功后写入，供 DevEco Studio 共用；原子写，失败只记日志 |
 
 ### token 过期 / 重启机器后需要重新登录吗？
 
@@ -351,6 +354,12 @@ export ANTHROPIC_MODEL=GLM-5.1
 
 Claude Code 长会话跑几轮就报错的问题，以及登录相关的修复，是近期的主要工作。每一项的来龙去脉见 `git log`。
 
+- **企业代理可用** —— 所有出站请求（登录、token 刷新、模型列表、推理）都会读取 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`，走 undici 的代理链路；公司网络里不用再额外配置，`NO_PROXY` 也按惯例生效。
+- **Improvement 上报默认关闭** —— `X-DevEco-Improvement-Enabled` 现在默认是 `false`，只有显式 `DEVECO_TOOL_IMPROVEMENT=1` 才开启，对齐官方客户端“没同意就不上报”的语义。
+- **非中国区账号在登录时就被拒** —— `nationalCode` 不是 `CN` 的账号会在登录阶段直接失败并给出可读提示，不再出现“登录成功、首个请求才 403”。
+- **国家/地区文件** —— 登录成功后会写 `~/.config/deveco/country.region.xml`（原子写、Windows 共享冲突重试），供 DevEco Studio 共用；写入失败只记日志，不会把成功登录变成失败。
+- **网络错误可读** —— DNS、代理、TLS、连接失败会直接说明该检查什么，而不是只抛一个 `fetch failed`。
+- **静态兜底模型更新** —— 动态目录拉取失败时回退的列表补上 `GLM-5.3`，与当前上游目录一致。
 - **上游超时改为「空闲超时」** — 只有当 DevEco **连续沉默** 120 秒才中断，取代原来那个会误杀长对话的 60 秒总时长上限。流被中断时补发真正的 Anthropic `error` 事件，不再直接截断。
 - **强制指定工具可用了** — `tool_choice: {"type":"tool"}` 原本会让整个请求失败，DevEco 只接受枚举形式。
 - **`max_tokens` 会被遵守** — Anthropic 路径上原本静默丢弃了这个字段。

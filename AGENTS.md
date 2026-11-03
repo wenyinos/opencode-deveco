@@ -68,6 +68,9 @@ opencode 已发布的二进制**不加载外部插件的 auth hooks**。实际�
 ## 其他模块
 
 - `daemon.ts` — 监督进程,代理退出后按退避重启(1s→2s→…上限 30s)
+- `env-fetch.ts` — 所有出站请求的统一入口;设置了 `HTTP(S)_PROXY` 时走 undici 的 `EnvHttpProxyAgent`(含 `NO_PROXY`),否则用全局 fetch(测试桩依赖这一点)
+- `country-region.ts` — 登录成功后写 `~/.config/deveco/country.region.xml`(供 DevEco Studio 共享)
+- `network-error.ts` — 登录网络失败的可操作提示(DNS/代理/TLS)
 - `openai-normalize.ts` — OpenAI 请求规范化
 - `models.ts` — 动态模型列表(GET `/codeGenie/modelConfig`)+ `config.ts` 中 `DEVECO_DEFAULTS` 静态兜底,缓存 1 小时;登录成功后 `resetModelCache()`
 - `config.ts` — 全部常量(端点、端口、token 生命周期、并发/队列默认值)+ 极简 logger(`DEVECO_LOG_LEVEL` 控制级别,info→stdout,warn/error→stderr)

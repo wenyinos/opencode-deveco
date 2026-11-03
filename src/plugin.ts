@@ -32,6 +32,7 @@ import { getDevecoProviderConfig, loadPersistedModels, resetModelCache } from ".
 import { DevEcoProxy, conversationKey } from "./proxy.js"
 import { applyVisionRouting } from "./vision-routing.js"
 import { normalizeOpenAIChatBody } from "./openai-normalize.js"
+import { envFetch } from "./env-fetch.js"
 
 // Default local proxy port. Kept in sync with README and the standalone CLI.
 const PROXY_PORT = Number(process.env.DEVECO_PROXY_PORT) || 17128
@@ -49,7 +50,7 @@ const sessionChatIdMap = new Map<string, string>()
 function exitQueue(key: string, chatId: string, model: string, token: string): void {
   const url = `${DEVECO_EXIT_QUEUE_URL}?modelId=${encodeURIComponent(model)}`
   const attempt = (retriesLeft: number): void => {
-    fetch(url, {
+    envFetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -220,7 +221,7 @@ function buildAuthedFetch(
     }
 
     const current = await getAuth()
-    if (!isOAuthLike(current)) return fetch(requestInput as RequestInfo, init)
+    if (!isOAuthLike(current)) return envFetch(requestInput as RequestInfo, init)
 
     if (!current.access || (current.expires ?? 0) < Date.now()) {
       const jwtToken = await tokenStore.load()
@@ -332,7 +333,7 @@ function buildAuthedFetch(
 
     let response: Response
     try {
-      response = await fetch(finalInput as RequestInfo, initForFetch)
+      response = await envFetch(finalInput as RequestInfo, initForFetch)
     } catch (err) {
       if (directToUpstream && upstreamModel) release()
       throw err

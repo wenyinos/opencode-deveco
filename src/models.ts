@@ -18,6 +18,7 @@ import {
   type ProviderInfo,
   log,
 } from "./config.js"
+import { envFetch } from "./env-fetch.js"
 
 // ---------------------------------------------------------------------------
 // Raw API shapes (subset of the fields we actually consume)
@@ -158,7 +159,7 @@ interface FetchedModels {
 }
 
 async function fetchModelsFromAPI(accessToken: string): Promise<FetchedModels> {
-  const response = await fetch(modelConfigUrl(), {
+  const response = await envFetch(modelConfigUrl(), {
     headers: {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
@@ -221,10 +222,9 @@ export async function getDevecoProviderConfig(accessToken: string): Promise<Prov
   cachedConfig = null
 
   // Keep this semantic intentionally: upstream puts the vision-only model
-  // (Qwen3_VL_...; tool_call: none) into task_default_model_map.blacklist, and
-  // applying that to the public list leaves GLM-5.1 as the only selectable
-  // model. GLM-5.1 is the only one that supports the full agent/tool loop; the
-  // hidden VL model is still used internally as the image fallback
+  // (Qwen3_VL_...; tool_call: none) into task_default_model_map.blacklist, so
+  // the public list keeps the text models that support the full agent/tool
+  // loop. The hidden VL model is still used internally as the image fallback
   // (src/vision-routing.ts), so no blacklist change is needed.
   const defaultBlacklist =
     DEVECO_DEFAULTS.taskDefaultModelMap.blacklist?.split(",") ?? []
