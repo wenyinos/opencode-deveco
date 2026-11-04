@@ -544,6 +544,26 @@ export class DevEcoProxy {
     })
   }
 
+  // The OpenAI and Anthropic paths share the same DevEco-required headers;
+  // keep them in one place so the (fingerprintable) User-Agent can't drift.
+  private buildDevEcoHeaders(
+    accessToken: string,
+    convKey: string,
+    chatId: string,
+  ): Record<string, string> {
+    return {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+      lang: "en",
+      "Chat-Id": chatId,
+      "Session-Id": convKey,
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      "accept-language": "zh-CN",
+      "X-DevEco-Improvement-Enabled": String(toolImprovementEnabled()),
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Session management
   // ---------------------------------------------------------------------------
@@ -908,17 +928,7 @@ export class DevEcoProxy {
 
     // DevEco-required headers.
     const chatId = this.chatIdFor(convKey)
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-      lang: "en",
-      "Chat-Id": chatId,
-      "Session-Id": convKey,
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-      "accept-language": "zh-CN",
-      "X-DevEco-Improvement-Enabled": String(toolImprovementEnabled()),
-    }
+    const headers = this.buildDevEcoHeaders(accessToken, convKey, chatId)
 
     // DevEco rejects several OpenAI-side shapes (the "developer" role, the
     // tool_choice object form) and ignores max_completion_tokens; rewrite them
@@ -1109,16 +1119,7 @@ export class DevEcoProxy {
 
     const convKey = this.sessionKeyFromRequest(req) ?? conversationKey(anthropicReq)
     const chatId = this.chatIdFor(convKey)
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-      lang: "en",
-      "Chat-Id": chatId,
-      "Session-Id": convKey,
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-      "accept-language": "zh-CN",
-      "X-DevEco-Improvement-Enabled": String(toolImprovementEnabled()),
-    }
+    const headers = this.buildDevEcoHeaders(accessToken, convKey, chatId)
 
     // Same cancellable wait as the OpenAI path, and the same teardown: the slot
     // goes to the next turn only after exitQueue settles. Callers that still owe
