@@ -58,11 +58,14 @@ opencode 已发布的二进制**不加载外部插件的 auth hooks**。实际�
 - 非流式必须用 `/no-stream/chat/completions` 路径(靠 URL 区分流式与否,不靠 body 的 `stream` 字段)
 - 必需 headers:`Authorization: Bearer`、`Chat-Id`(32 位去连字符 UUID)、`lang`、`User-Agent`、`accept-language`
 - 网关亲和 headers(对齐上游 `a0090b2d6`/`a074b2c6b`):`x-deveco-session`、`x-deveco-task`(每轮 32 位 id,推理与 exitSessionQueue 必须用同一个)、`x-deveco-client`(`deveco-code@<version>`);`x-deveco-project` / `x-deveco-parent-session` 有则透传。旧 `Chat-Id`/`Session-Id` 保留兼容
-- 模型 id 是 `GLM-5.1` / `GLM-5.3`(不是 `glm-5`);`deepseek-v4-flash` 是隐藏模型,不在动态模型列表中,须手工指定
+- 上游要求 `Session-Id` 不超过 32 字符(超过返回 `SSE request header Session-Id is too long`);客户端给的 `x-session-id`/`x-session-affinity`/`x-deveco-session` 必须过 `normalizeAffinityId()`(UUID 去连字符、超长稳定哈希),ZCode 发的就是 36 位 UUID
+- 对外模型 id 是 `GLM-5.1-DevEco` / `GLM-5.3-DevEco`(华为部署版,避免与智谱公版混淆);上游 wire 仍用 `GLM-5.1` / `GLM-5.3`(不是 `glm-5`),旧的裸 id 作为兼容别名继续接受;`deepseek-v4-flash` 是隐藏模型,不在动态模型列表中,须手工指定
+- 渠道对 GLM-5.1/5.3 的声明上限是 170K context / 32K output(低于官方规格);`/v2/models` 暴露 `context_length`/`max_output_tokens`,`openai-normalize.ts` 会把超过 32K 的 `max_tokens` clamp 到 32K;静态兜底 `DEVECO_MODEL_LIMITS` 必须与渠道一致
 - **`tool_choice` 是枚举**,只收 `"auto"|"none"|"required"`。发 OpenAI 对象形式会让整个请求 400;指定某工具靠 `"required"` + 收窄 `tools` 模拟
 - **服务端按 (`Session-Id`, `Chat-Id`) 维护轮次状态**,每轮结束 POST `exitSessionQueue` 释放槽位(等待上限 3s);Chat-Id 以对话**首条 user 消息**为键(不是 `messages[0]`——那是 system prompt,易变会话会疯狂新开上游 session),`DEVECO_SESSION_KEY_MODE=system-first` 恢复旧行为;客户端可用 `x-session-id` 等头显式固定
 - 聊天用**空闲超时**(沉默 120s 才断,`UPSTREAM_IDLE_TIMEOUT_MS`),不能用总时长超时——`AbortSignal.timeout` 会掐断已在流的请求,长对话必然误伤;登录/token 接口是普通 20s 超时
 - 同一 jwtToken 不支持两个进程并发刷新,只能跑单实例
+- 推理档位:云端声明了档位的模型(GLM-5.3)会把 OpenAI 标准档位就近吸附到声明档,未知值/非字符串/空值直接丢弃让上游走默认,不透传给校验器;未声明档位的模型(GLM-5.1)保留标准档位,`none`/`off` 映射为 `thinking:{type:"disabled"}`
 - 文本模型(GLM-5.1/5.3,`input_modalities: ["text"]`)收到含图请求会 403,代理自动改路由到视觉模型 `Qwen3_5_397B_A17B_w8a8_single`(`vision-routing.ts`;`DEVECO_VISION_MODEL` / `DEVECO_TEXT_ONLY_MODELS` 可覆盖);旧 `Qwen3_VL_235B_A22B_Instruct` 已对图片请求返回 400
 - 并发控制:同时仅 1 个上游生成(`DEVECO_MAX_CONCURRENCY`),超出排队(上限 `DEVECO_MAX_QUEUE=3`,再超出直接 429),排队请求入场前冷却 `DEVECO_QUEUE_COOLDOWN_SEC`(默认 1s)。`/v2/status` 等元数据端点不排队
 
@@ -72,6 +75,7 @@ opencode 已发布的二进制**不加载外部插件的 auth hooks**。实际�
 - `env-fetch.ts` — 所有出站请求的统一入口;设置了 `HTTP(S)_PROXY` 时走 undici 的 `EnvHttpProxyAgent`(含 `NO_PROXY`),否则用全局 fetch(测试桩依赖这一点)
 - `country-region.ts` — 登录成功后写 `~/.config/deveco/country.region.xml`(供 DevEco Studio 共享)
 - `network-error.ts` — 登录网络失败的可操作提示(DNS/代理/TLS)
+- `upstream-limit.ts` — 上游明确长度错误的渠道上限提示(400/413;GLM 的 403 ModelServiceError 不强行归因)
 - `openai-normalize.ts` — OpenAI 请求规范化
 - `models.ts` — 动态模型列表(GET `/codeGenie/modelConfig`)+ `config.ts` 中 `DEVECO_DEFAULTS` 静态兜底,缓存 1 小时;登录成功后 `resetModelCache()`
 - `config.ts` — 全部常量(端点、端口、token 生命周期、并发/队列默认值)+ 极简 logger(`DEVECO_LOG_LEVEL` 控制级别,info→stdout,warn/error→stderr)

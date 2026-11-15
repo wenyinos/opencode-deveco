@@ -4,6 +4,7 @@ import {
   normalizeOpenAIChatBody,
   normalizeOpenAIDeveloperRole,
   normalizeOpenAIMaxTokens,
+  normalizeOpenAIOutputLimit,
   normalizeOpenAIReasoningEffort,
   normalizeOpenAIThinkingSplit,
   normalizeOpenAIToolChoice,
@@ -136,6 +137,29 @@ describe("normalizeOpenAIMaxTokens", () => {
   })
 })
 
+describe("normalizeOpenAIOutputLimit", () => {
+  it("clamps GLM output caps to the channel's 32K", () => {
+    const r = normalizeOpenAIOutputLimit({ model: "GLM-5.1", max_tokens: 131_072 })
+    expect(r.changed).toBe(true)
+    expect(r.body.max_tokens).toBe(32_000)
+  })
+
+  it("leaves smaller caps, unknown models and absent caps untouched", () => {
+    const small = { model: "GLM-5.3", max_tokens: 32_000 }
+    expect(normalizeOpenAIOutputLimit(small).body).toBe(small)
+    const hidden = { model: "deepseek-v4-flash", max_tokens: 200_000 }
+    expect(normalizeOpenAIOutputLimit(hidden).body).toBe(hidden)
+    const absent = { model: "GLM-5.1" }
+    expect(normalizeOpenAIOutputLimit(absent).body).toBe(absent)
+  })
+
+  it("runs after the max_completion_tokens alias is rewritten", () => {
+    const r = normalizeOpenAIChatBody({ model: "GLM-5.1", max_completion_tokens: 100_000 })
+    expect(r.body.max_tokens).toBe(32_000)
+    expect("max_completion_tokens" in r.body).toBe(false)
+  })
+})
+
 describe("normalizeOpenAIReasoningEffort", () => {
   it("maps none/off to thinking disabled and drops the effort", () => {
     for (const effort of ["none", "off"]) {
@@ -171,10 +195,28 @@ describe("normalizeOpenAIReasoningEffort", () => {
     }
   })
 
-  it("leaves unknown values for the upstream validator", () => {
+  it("passes standard OpenAI tiers through when no tiers are declared", () => {
     const body = { reasoning_effort: "minimal" }
     expect(normalizeOpenAIReasoningEffort(body).changed).toBe(false)
     expect(normalizeOpenAIReasoningEffort({}).changed).toBe(false)
+  })
+
+  it("drops unknown, empty and non-string values instead of forwarding them", () => {
+    for (const effort of ["turbo", "", "  ", null, 42, { effort: "high" }]) {
+      const r = normalizeOpenAIReasoningEffort({ reasoning_effort: effort })
+      expect(r.changed).toBe(true)
+      expect("reasoning_effort" in r.body).toBe(false)
+    }
+  })
+
+  it("normalises case and maps off/none onto a declared tier", () => {
+    const upper = normalizeOpenAIReasoningEffort({ reasoning_effort: "HIGH" })
+    expect(upper.body.reasoning_effort).toBe("high")
+
+    const off = normalizeOpenAIReasoningEffort({ reasoning_effort: "off" })
+    // No tiers cached: off still becomes the explicit disabled request.
+    expect("reasoning_effort" in off.body).toBe(false)
+    expect(off.body.thinking).toEqual({ type: "disabled" })
   })
 })
 
@@ -293,6 +335,19 @@ describe("normalizeOpenAIReasoningEffort against a cached model config", () => {
     expect(r.changed).toBe(true)
     expect("reasoning_effort" in r.body).toBe(false)
     expect(r.body.thinking).toEqual({ type: "disabled" })
+  })
+
+  it("drops an unknown tier instead of letting the upstream validator reject it", async () => {
+    await primeConfig()
+    const r = normalizeOpenAIReasoningEffort({ model: "GLM-5.3", reasoning_effort: "turbo" })
+    expect(r.changed).toBe(true)
+    expect("reasoning_effort" in r.body).toBe(false)
+  })
+
+  it("maps off onto a declared tier when the model has one", async () => {
+    await primeConfig()
+    const r = normalizeOpenAIReasoningEffort({ model: "GLM-5.3", reasoning_effort: "off" })
+    expect(r.body.reasoning_effort).toBe("low")
   })
 })
 

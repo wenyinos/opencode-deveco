@@ -46,7 +46,7 @@ describe("applyConfigHook", () => {
       const cfg: { provider?: Record<string, unknown> } = {}
       applyConfigHook(cfg)
       const entry = cfg.provider?.[PROVIDER_ID] as ProviderInfo
-      expect(Object.keys(entry.models ?? {}).sort()).toEqual(["GLM-5.1", "GLM-5.3"])
+      expect(Object.keys(entry.models ?? {}).sort()).toEqual(["GLM-5.1-DevEco", "GLM-5.3-DevEco"])
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
@@ -60,7 +60,7 @@ describe("applyConfigHook", () => {
       })
       const fresh: { provider?: Record<string, unknown>; small_model?: string } = {}
       applyConfigHook(fresh)
-      expect(fresh.small_model).toBe(`${PROVIDER_ID}/GLM-5.3`)
+      expect(fresh.small_model).toBe(`${PROVIDER_ID}/GLM-5.3-DevEco`)
 
       const mine: { provider?: Record<string, unknown>; small_model?: string } = {
         small_model: "anthropic/claude-haiku",
@@ -89,9 +89,9 @@ describe("applyConfigHook", () => {
       const entry = cfg.provider[PROVIDER_ID] as Record<string, unknown>
       // User fields survive…
       expect(entry.options).toEqual({ baseURL: "http://127.0.0.1:17128/v2", setCacheKey: true })
-      // …and their model gains the cloud's metadata.
+      // …and their model gains the cloud's metadata under the exposed id.
       expect(entry.models).toEqual({
-        "GLM-5.3": { name: "My GLM", limit: { context: 170000 } },
+        "GLM-5.3-DevEco": { name: "My GLM", limit: { context: 170000 } },
       })
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })

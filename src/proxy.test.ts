@@ -13,6 +13,7 @@ import {
 } from "./proxy.js"
 import { JsonTokenStore } from "./token-store.js"
 import { log, maxQueue, PLUGIN_VERSION, queueCooldownMs } from "./config.js"
+import { resetModelCache } from "./models.js"
 
 // Helper: build a minimal JWT (header.payload.signature) with a given payload.
 function makeJwt(payload: Record<string, unknown>): string {
@@ -487,6 +488,12 @@ describe("sessionKeyFromHeaders", () => {
     expect(sessionKeyFromHeaders({ "x-deveco-session": "s1", "x-session-id": "s3" })).toBe("s1")
   })
 
+  it("compacts a hyphenated UUID to the gateway's 32-char form", () => {
+    expect(
+      sessionKeyFromHeaders({ "x-session-id": "f1ad4a5f-eb2c-4127-8d46-8de65ef8f7ec" }),
+    ).toBe("f1ad4a5feb2c41278d468de65ef8f7ec")
+  })
+
   it("returns null for missing or blank headers", () => {
     expect(sessionKeyFromHeaders({})).toBeNull()
     expect(sessionKeyFromHeaders({ "x-session-id": "   " })).toBeNull()
@@ -686,12 +693,67 @@ describe("DevEcoProxy integration", () => {
     expect(logged).toBe(true)
   })
 
+  it("exposes the channel's context and output limits on /v2/models", async () => {
+    resetModelCache()
+    const p = await startProxy()
+    const body = (await (await fetch(`http://127.0.0.1:${p.getPort()}/v2/models`)).json()) as {
+      data: Array<{ id: string; context_length?: number; max_output_tokens?: number }>
+    }
+    const glm = body.data.find((model) => model.id === "GLM-5.1-DevEco")
+    expect(glm?.context_length).toBe(170_000)
+    expect(glm?.max_output_tokens).toBe(32_000)
+  })
+
+  it("adds the channel limit to explicit over-limit errors", async () => {
+    const fresh = makeJwt({ userId: "u1", userName: "New", exp: Math.floor(Date.now() / 1000) + 3600 })
+    await new JsonTokenStore().save(fresh)
+    const p = await startProxy()
+
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url
+      if (url.includes("127.0.0.1")) return originalFetch(input, init)
+      if (url.includes("jwToken/check")) {
+        return new Response(
+          JSON.stringify({
+            status: true,
+            userInfo: { accessToken: "mock-at", refreshToken: "mock-rt", nationalCode: "CN", realName: true },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        )
+      }
+      if (url.includes("/chat/completions")) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: "the prompt length 1044994 must less than the maximum input length 1044480",
+              type: "BadRequest",
+              code: "400",
+            },
+          }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        )
+      }
+      if (url.includes("exitSessionQueue")) return new Response("ok", { status: 200 })
+      return new Response("{}", { status: 404 })
+    }) as typeof fetch
+
+    const res = await fetch(`http://127.0.0.1:${p.getPort()}/v2/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "GLM-5.1", messages: [{ role: "user", content: "hi" }] }),
+    })
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as { error: { message: string } }
+    expect(body.error.message).toContain("170,000")
+  })
+
   it("sends the gateway task/session/client headers and mirrors them on exit", async () => {
     const fresh = makeJwt({ userId: "u1", userName: "New", exp: Math.floor(Date.now() / 1000) + 3600 })
     await new JsonTokenStore().save(fresh)
     const p = await startProxy()
 
     const seen: Array<{ url: string; headers: Record<string, string> }> = []
+    const bodies: Array<Record<string, unknown>> = []
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url
       if (url.includes("127.0.0.1")) return originalFetch(input, init)
@@ -700,6 +762,13 @@ describe("DevEcoProxy integration", () => {
         headers[key] = value
       })
       seen.push({ url, headers })
+      if (url.includes("/chat/completions") && init?.body) {
+        const bodyText =
+          typeof init.body === "string"
+            ? init.body
+            : Buffer.from(init.body as Uint8Array).toString("utf8")
+        bodies.push(JSON.parse(bodyText) as Record<string, unknown>)
+      }
       if (url.includes("jwToken/check")) {
         return new Response(
           JSON.stringify({
@@ -733,8 +802,12 @@ describe("DevEcoProxy integration", () => {
 
     const res = await fetch(`http://127.0.0.1:${p.getPort()}/v2/chat/completions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-deveco-project": "proj-1" },
-      body: JSON.stringify({ model: "GLM-5.1", messages: [{ role: "user", content: "hi" }] }),
+      headers: {
+        "Content-Type": "application/json",
+        "x-deveco-project": "proj-1",
+        "x-session-id": "f1ad4a5f-eb2c-4127-8d46-8de65ef8f7ec",
+      },
+      body: JSON.stringify({ model: "GLM-5.1-DevEco", messages: [{ role: "user", content: "hi" }] }),
     })
     expect(res.status).toBe(200)
     // exitQueue runs after the response is piped; give it a moment to land.
@@ -742,10 +815,13 @@ describe("DevEcoProxy integration", () => {
 
     const chat = seen.find((entry) => entry.url.includes("chat/completions"))
     expect(chat).toBeDefined()
-    expect(chat!.headers["x-deveco-session"]).toBeTruthy()
+    expect(chat!.headers["session-id"]).toBe("f1ad4a5feb2c41278d468de65ef8f7ec")
+    expect(chat!.headers["x-deveco-session"]).toBe("f1ad4a5feb2c41278d468de65ef8f7ec")
     expect(chat!.headers["x-deveco-task"]).toMatch(/^[0-9a-f]{32}$/)
     expect(chat!.headers["x-deveco-client"]).toBe(`deveco-code@${PLUGIN_VERSION}`)
     expect(chat!.headers["x-deveco-project"]).toBe("proj-1")
+    // The public -DevEco name must not reach the upstream wire.
+    expect(bodies[0]?.model).toBe("GLM-5.1")
 
     const exit = seen.find((entry) => entry.url.includes("exitSessionQueue"))
     expect(exit).toBeDefined()
@@ -1244,7 +1320,7 @@ describe("DevEcoProxy integration", () => {
     const res = await fetch(`http://127.0.0.1:${p.getPort()}/v2/models`)
     expect(res.status).toBe(200)
     const list = (await res.json()) as { data: Array<{ id: string }> }
-    expect(list.data.map((m) => m.id)).toContain("GLM-5.1")
+    expect(list.data.map((m) => m.id)).toContain("GLM-5.1-DevEco")
 
     releaseTurn()
     expect((await turn).status).toBe(200)

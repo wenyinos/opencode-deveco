@@ -5,6 +5,7 @@
 //   packages/opencode/src/plugin/deveco-models.ts (DEVECO_DEFAULTS)
 // and stripped of fork-internal dependencies (Global.Path, Log, etc.).
 
+import { createHash } from "node:crypto"
 import { createRequire } from "node:module"
 
 const require = createRequire(import.meta.url)
@@ -144,6 +145,70 @@ export function toolImprovementEnabled(): boolean {
   return process.env.DEVECO_TOOL_IMPROVEMENT === "1"
 }
 
+/**
+ * Limits the DevEco channel actually declares for the text models. These are
+ * per-product caps, lower than the public Zhipu specs (GLM-5.1: 200K/131K,
+ * GLM-5.3: 1M/131K). Tools read them from `/v2/models`; the proxy also clamps
+ * `max_tokens` to the output cap.
+ */
+export const DEVECO_GLM_CONTEXT_LIMIT = 170_000
+export const DEVECO_GLM_OUTPUT_LIMIT = 32_000
+
+export const DEVECO_MODEL_LIMITS: Record<string, { context: number; output: number }> = {
+  "GLM-5.1": { context: DEVECO_GLM_CONTEXT_LIMIT, output: DEVECO_GLM_OUTPUT_LIMIT },
+  "GLM-5.3": { context: DEVECO_GLM_CONTEXT_LIMIT, output: DEVECO_GLM_OUTPUT_LIMIT },
+}
+
+/**
+ * Names shown to clients. DevEco serves Huawei-deployed GLM variants, not the
+ * public Zhipu models, so the suffix makes the distinction explicit. The
+ * upstream wire protocol still uses the bare ids in `DEVECO_MODEL_LIMITS`;
+ * requests are normalized at ingress and the model list is renamed at egress.
+ */
+export const DEVECO_EXPOSED_MODEL_IDS: Record<string, string> = {
+  "GLM-5.1": "GLM-5.1-DevEco",
+  "GLM-5.3": "GLM-5.3-DevEco",
+}
+
+const DEVECO_UPSTREAM_MODEL_IDS: Record<string, string> = Object.fromEntries(
+  Object.entries(DEVECO_EXPOSED_MODEL_IDS).map(([upstream, exposed]) => [exposed, upstream]),
+)
+
+/** Public name for an upstream model id (idempotent for unknown models). */
+export function exposedModelId(model: string): string {
+  return DEVECO_EXPOSED_MODEL_IDS[model] ?? model
+}
+
+/** Upstream id for a public model name (idempotent for unknown models). */
+export function upstreamModelId(model: string): string {
+  return DEVECO_UPSTREAM_MODEL_IDS[model] ?? model
+}
+
+/** The channel's output cap for an upstream model id, if it declares one. */
+export function channelOutputLimit(model: string): number | undefined {
+  return DEVECO_MODEL_LIMITS[model]?.output
+}
+
+const UUID_PATTERN =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
+
+/**
+ * Normalize a client-supplied session/affinity id to the gateway's limit.
+ *
+ * DevEco rejects a `Session-Id` longer than 32 characters. ZCode sends a
+ * canonical 36-character UUID in `x-session-id`, which hit exactly that error;
+ * stripping the hyphens yields the same 32-hex value. Short ids are left
+ * alone, and anything longer is hashed deterministically so a client that pins
+ * a session keeps a stable upstream id.
+ */
+export function normalizeAffinityId(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed) return ""
+  if (UUID_PATTERN.test(trimmed)) return trimmed.replace(/-/g, "").toLowerCase()
+  if (trimmed.length <= 32) return trimmed
+  return createHash("sha256").update(trimmed).digest("hex").slice(0, 32)
+}
+
 /** accessToken lifetime in ms (30 min, matching deveco-code). */
 export const ACCESS_TOKEN_EXPIRES_MS = 30 * 60 * 1000
 
@@ -238,14 +303,16 @@ export const DEVECO_DEFAULTS = {
         name: "GLM-5.3",
         reasoning: true,
         tool_call: true,
-        limit: { context: 202752, output: 131072 },
+        // The DevEco channel declares a lower per-product limit than the
+        // public Zhipu model; use the channel's numbers, not official specs.
+        limit: DEVECO_MODEL_LIMITS["GLM-5.3"],
         modalities: { input: ["text"], output: ["text"] },
       },
       "GLM-5.1": {
         name: "GLM-5.1",
         reasoning: true,
         tool_call: true,
-        limit: { context: 202752, output: 131072 },
+        limit: DEVECO_MODEL_LIMITS["GLM-5.1"],
         modalities: { input: ["text"], output: ["text"] },
       },
       "Qwen3_5_397B_A17B_w8a8_single": {

@@ -23,9 +23,12 @@ import {
   OAUTH_DUMMY_KEY,
   PLUGIN_VERSION,
   PROVIDER_ID,
+  exposedModelId,
   type ModelInfo,
+  normalizeAffinityId,
   type ProviderInfo,
   log,
+  upstreamModelId,
 } from "./config.js"
 import { createLoginService } from "./auth-login.js"
 import { JsonTokenStore } from "./token-store.js"
@@ -146,6 +149,13 @@ export function mergeModels(
   return merged
 }
 
+/** Rename catalog keys to the public ids clients select from. */
+function exposeModelCatalog(models: Record<string, ModelInfo>): Record<string, ModelInfo> {
+  const exposed: Record<string, ModelInfo> = {}
+  for (const [id, info] of Object.entries(models)) exposed[exposedModelId(id)] = info
+  return exposed
+}
+
 export function applyConfigHook(cfg: {
   provider?: Record<string, unknown>
   small_model?: string
@@ -156,10 +166,11 @@ export function applyConfigHook(cfg: {
 
     const persisted = loadPersistedModels()
     const persistedModels = persisted?.config.models
-    const catalog =
+    const catalog = exposeModelCatalog(
       persistedModels && Object.keys(persistedModels).length > 0
         ? persistedModels
-        : DEVECO_DEFAULTS.provider.models
+        : DEVECO_DEFAULTS.provider.models,
+    )
 
     const existing = cfg.provider[PROVIDER_ID]
     if (!existing) {
@@ -174,9 +185,14 @@ export function applyConfigHook(cfg: {
       cfg.provider[PROVIDER_ID] = provider
     } else if (typeof existing === "object") {
       // A user-owned entry keeps its own fields (baseURL, options, …); only the
-      // model list is merged into it.
+      // model list is merged into it. Rename legacy bare ids before merging so
+      // an existing `GLM-5.3` override lands on the exposed `GLM-5.3-DevEco`.
       const entry = existing as Record<string, unknown>
-      entry.models = mergeModels({ ...catalog }, entry.models)
+      const userModels =
+        entry.models && typeof entry.models === "object"
+          ? exposeModelCatalog(entry.models as Record<string, ModelInfo>)
+          : entry.models
+      entry.models = mergeModels({ ...catalog }, userModels)
     }
 
     // opencode resolves the small model from this top-level field (the DevEco
@@ -185,7 +201,7 @@ export function applyConfigHook(cfg: {
     // the model DevEco intends. A user-set small_model wins.
     const small = persisted?.taskMap?.small_model
     if (small && typeof small === "string" && !cfg.small_model) {
-      cfg.small_model = `${PROVIDER_ID}/${small}`
+      cfg.small_model = `${PROVIDER_ID}/${exposedModelId(small)}`
     }
   } catch (err) {
     log.error("config hook failed", { error: String(err) })
@@ -279,14 +295,23 @@ function buildAuthedFetch(
     if (typeof init?.body === "string") {
       try {
         const parsed = JSON.parse(init.body) as Record<string, unknown>
-        if (typeof parsed.model === "string") upstreamModel = parsed.model
+        let modelRewritten = false
+        if (typeof parsed.model === "string") {
+          upstreamModel = parsed.model
+          const upstream = upstreamModelId(upstreamModel)
+          if (upstream !== upstreamModel) {
+            parsed.model = upstream
+            upstreamModel = upstream
+            modelRewritten = true
+          }
+        }
         if (parsed.stream === true) streamBody = true
 
         const explicit =
           headers.get("x-deveco-session") ||
           headers.get("x-session-affinity") ||
           headers.get("x-session-id")
-        convKey = explicit || conversationKey(parsed)
+        convKey = (explicit && normalizeAffinityId(explicit)) || conversationKey(parsed)
 
         // Same DevEco quirks as the proxy: role/token-cap/tool_choice rewrites
         // and the transparent vision fallback.
@@ -294,7 +319,7 @@ function buildAuthedFetch(
         const routing = applyVisionRouting(normalized.body)
         if (routing) {
           upstreamModel = routing.upstreamModel
-          if (routing.rerouted || routing.imagesStripped || normalized.changed) {
+          if (routing.rerouted || routing.imagesStripped || normalized.changed || modelRewritten) {
             bodyForFetch = JSON.stringify(routing.body)
           }
         }
@@ -328,8 +353,10 @@ function buildAuthedFetch(
       chatId = crypto.randomUUID().replace(/-/g, "")
       sessionChatIdMap.set(convKey, chatId)
     }
+    const incomingTask = headers.get("x-deveco-task")
     const taskId =
-      headers.get("x-deveco-task")?.trim() || crypto.randomUUID().replace(/-/g, "")
+      (incomingTask && normalizeAffinityId(incomingTask)) ||
+      crypto.randomUUID().replace(/-/g, "")
     headers.set("Chat-Id", chatId)
     headers.set("Session-Id", convKey)
     headers.set("x-deveco-session", convKey)

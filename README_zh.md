@@ -66,11 +66,11 @@ npm run lint           # 检查代码风格
         "apiKey": "opencode-oauth-dummy-key"
       },
       "models": {
-        "GLM-5.1": {
-          "name": "GLM-5.1",
+        "GLM-5.1-DevEco": {
+          "name": "GLM-5.1-DevEco",
           "reasoning": true,
           "tool_call": true,
-          "limit": { "context": 170000, "output": 131072 },
+          "limit": { "context": 170000, "output": 32000 },
           "modalities": { "input": ["text"], "output": ["text"] }
         }
       }
@@ -190,13 +190,11 @@ ssh -L 10101:127.0.0.1:10101 -L 17128:127.0.0.1:17128 user@server
 ## 验证
 
 ```bash
-opencode models                           # 应能看到 deveco/GLM-5.1 和 deveco/GLM-5.3
-opencode run "say hi" -m deveco/GLM-5.1   # 通过代理发真实请求
+opencode models                                # 应能看到 deveco/GLM-5.1-DevEco 和 deveco/GLM-5.3-DevEco
+opencode run "say hi" -m deveco/GLM-5.1-DevEco # 通过代理发真实请求
 ```
 
-> 模型 id 是 **`GLM-5.1` / `GLM-5.3`**（DevEco 后端实际下发的名字）。如果看到
-> `ProviderModelNotFoundError` 且 `suggestions: ["GLM-5.1"]`，说明你用了老的
-> `glm-5` 名字 —— 改成 `GLM-5.1` 即可。
+> 对外模型 id 是 **`GLM-5.1-DevEco` / `GLM-5.3-DevEco`** —— 华为部署的版本，不是智谱公版。代理仍兼容旧的裸 id（`GLM-5.1` / `GLM-5.3`），但模型列表和文档统一用 `-DevEco` 名字。如果看到 `ProviderModelNotFoundError` 且 `suggestions: ["GLM-5.1-DevEco"]`，改成该名字即可。
 
 ---
 
@@ -206,7 +204,7 @@ opencode run "say hi" -m deveco/GLM-5.1   # 通过代理发真实请求
 |---|---|
 | `POST /v2/chat/completions` | OpenAI 兼容 — 转发到 DevEco（默认非流式；显式 `"stream": true` 才走 SSE 流式） |
 | `POST /anthropic/v1/messages` | Anthropic Messages API — 自动转换为 OpenAI 格式 |
-| `GET  /v2/models` | DevEco 模型列表（动态获取，失败回退静态；1 小时缓存 TTL） |
+| `GET  /v2/models` | DevEco 模型列表（动态获取，失败回退静态；1 小时缓存 TTL），含 `context_length` / `max_output_tokens` |
 | `GET  /v2/login` | 302 跳转到华为 OAuth 页面（不跟随重定向的客户端会拿到 `{login_url}`） |
 | `GET  /v2/status` | `{ logged_in, user, expires_in_ms }` |
 | `GET  /v2/logout` | 清除已存凭证 |
@@ -217,9 +215,9 @@ opencode run "say hi" -m deveco/GLM-5.1   # 通过代理发真实请求
 
 ## 识图自动路由（文本模型的视觉补充）
 
-`GLM-5.1` / `GLM-5.3` 都是文本模型，带图片的请求会被上游拒绝（HTTP 403）。代理内置了一层**透明识图转发**，无需修改 opencode 配置：
+`GLM-5.1-DevEco` / `GLM-5.3-DevEco` 都是文本模型，带图片的请求会被上游拒绝（HTTP 403）。代理内置了一层**透明识图转发**，无需修改 opencode 配置：
 
-- **哪些模型算"文本-only"由上游模型配置自动判定**：代理读取 `modelConfig` 返回的 `input_modalities`，只声明 `["text"]` 的模型即视为文本模型（随模型列表缓存 1 小时）。上游新增模型或调整模型能力时无需改代码；模型配置尚不可用（冷启动、离线、未登录）时回退内置列表 `GLM-5.1,GLM-5.3`；
+- **哪些模型算"文本-only"由上游模型配置自动判定**：代理读取 `modelConfig` 返回的 `input_modalities`，只声明 `["text"]` 的模型即视为文本模型（随模型列表缓存 1 小时）。上游新增模型或调整模型能力时无需改代码；模型配置尚不可用（冷启动、离线、未登录）时回退内置列表 `GLM-5.1,GLM-5.3`（上游 id）；
 - 请求模型是文本-only、且**最新一条用户消息含图片**时，代理自动改用视觉模型 `Qwen3_5_397B_A17B_w8a8_single` 转发，响应原样返回，客户端无感知；
 - 下一轮没有新图片时自动回到原模型，历史消息里的旧图片会被替换为 `[图片]` 占位符（上轮视觉模型得出的文字结论仍在历史里），避免文本模型再次报 403；
 - 转发到视觉模型时会移除 `tools` / `tool_choice` —— 该模型不输出结构化工具调用，直接以文字描述图片；
@@ -228,7 +226,7 @@ opencode run "say hi" -m deveco/GLM-5.1   # 通过代理发真实请求
 日志中可看到路由动作：
 
 ```
--> POST no-stream model=GLM-5.1 → vision:Qwen3_5_397B_A17B_w8a8_single
+-> POST no-stream model=GLM-5.1-DevEco → vision:Qwen3_5_397B_A17B_w8a8_single
 ```
 
 覆盖默认值的环境变量：
@@ -237,7 +235,7 @@ opencode run "say hi" -m deveco/GLM-5.1   # 通过代理发真实请求
 |---|---|---|
 | `DEVECO_VISION_MODEL` | `Qwen3_5_397B_A17B_w8a8_single` | 识图兜底模型 |
 | `DEVECO_TOOL_IMPROVEMENT` | `0` | 是否随推理请求发送 `X-DevEco-Improvement-Enabled`（对齐官方客户端“未同意即 false”），设 `1` 显式开启 |
-| `DEVECO_TEXT_ONLY_MODELS` | 自动（按上游 `input_modalities`） | 视为纯文本的模型，逗号分隔；显式设置时以此为准，模型配置不可用时回退内置 `GLM-5.1,GLM-5.3` |
+| `DEVECO_TEXT_ONLY_MODELS` | 自动（按上游 `input_modalities`） | 视为纯文本的模型，逗号分隔（写 `GLM-5.1-DevEco` 或上游 id `GLM-5.1` 都可）；显式设置时以此为准，模型配置不可用时回退内置 `GLM-5.1,GLM-5.3` |
 | `DEVECO_MAX_CONCURRENCY` | `1` | 允许同时在跑的生成回合数，超出部分按到达顺序排队（默认串行）；元数据接口（`/status`、`/models`、`/login`、`/logout`）不参与排队 |
 | `DEVECO_QUEUE_COOLDOWN_SEC` | `1` | 排队请求被放行前的冷却秒数（可小数如 `0.5`）；直接拿到空闲槽位的请求立即发出、不冷却，设 `0` 关闭 |
 | `DEVECO_MAX_QUEUE` | `3` | 同时排队等待槽位的请求数上限，超出的请求立刻返回 429（`rate_limit_error`）而不是继续堆积；设 `0` 表示不排队（没有空闲槽位即 429） |
@@ -258,13 +256,15 @@ DevEco 对短时间新建会话数量有限制（`UserSessionLimitExceeded`）�
 | 模型 | 上游声明 `context_window` | 实测通过 | 实测被拒 | 结论 |
 |---|---|---|---|---|
 | `deepseek-v4-flash` | 未声明（不在模型表中） | 1,042,769 tokens（约 85 s） | 1,044,994 → `400 OverLimitRequestBody` | 硬上限 **1,044,480** tokens（≈1020K） |
-| `GLM-5.3` | 170,000 | 198,197 tokens（116 s） | 209,880 → `403 ModelServiceError` | 有效 **≈200K** |
-| `GLM-5.1` | 170,000 | 198,192 tokens（49 s） | 204,110 → `403 ModelServiceError` | 有效 **≈200K** |
+| `GLM-5.3-DevEco`（上游 `GLM-5.3`） | 170,000 | 198,197 tokens（116 s） | 209,880 → `403 ModelServiceError` | 有效 **≈200K** |
+| `GLM-5.1-DevEco`（上游 `GLM-5.1`） | 170,000 | 198,192 tokens（49 s） | 204,110 → `403 ModelServiceError` | 有效 **≈200K** |
 
 - **`deepseek-v4-flash` 是明确的硬限制**，上游报错会直接给出数字：`the prompt length 1044994 must less than the maximum input length 1044480`。超限即 `400`，边界干净。
-- **GLM-5.x 的拒绝不是长度报错**，而是 `403 ModelServiceError`：`Built-in model service is currently overloaded` / `Full inference timed out`（约 35 s 快速拒绝，不是真的跑满超时）。198K 稳定通过、204K 起稳定被拒，所以 ≈200K 是**观测量**而不是上游声明的限制；实际使用建议留余量（GLM-5.1 按 ~190K、GLM-5.3 按 ~180K 更稳，后者在 198K 时单次要 116 s）。
+- **GLM-5.x 的拒绝不是长度报错**，而是 `403 ModelServiceError`：`Built-in model service is currently overloaded` / `Full inference timed out`（约 35 s 快速拒绝，不是真的跑满超时）。198K 稳定通过、204K 起稳定被拒，所以 ≈200K 是**观测量**而不是上游声明的限制；实际使用建议留余量（`GLM-5.1-DevEco` 按 ~190K、`GLM-5.3-DevEco` 按 ~180K 更稳，后者在 198K 时单次要 116 s）。
 - 同一段文本 GLM 的分词更省（约 1.17 tokens/词 vs deepseek 的 1.23），但可用容量仍差一个数量级。
-- **`deepseek-v4-flash` 是隐藏模型**：既不在 `GET /v2/models`，也不在上游 `modelConfig` 里（后者只有 `GLM-5.3` / `GLM-5.1` / `Qwen3_5_397B_A17B_w8a8_single`）。靠模型列表自动拉取的客户端看不到它，必须手写模型名。代理对模型名不做限制，上游认识的 id 直接指定即可；缺点是它的元数据（上下文/模态/档位）上游一概不提供，所以默认列表里不会有它。需要时手工启用（以 opencode 为例，写进 `~/.config/opencode/opencode.json`）：
+> 渠道当前声明：`GLM-5.1-DevEco` / `GLM-5.3-DevEco` 均为 **170,000 context / 32,000 最大输出**。这和智谱官方规格不同（官方 5.1 为 200K/131K，5.3 为 1M/131K）；代理的静态兜底与示例配置已按渠道值写入。
+
+- **`deepseek-v4-flash` 是隐藏模型**：既不在 `GET /v2/models`，也不在上游 `modelConfig` 里（后者只有上游 id `GLM-5.3` / `GLM-5.1` / `Qwen3_5_397B_A17B_w8a8_single`）。靠模型列表自动拉取的客户端看不到它，必须手写模型名。代理对模型名不做限制，上游认识的 id 直接指定即可；缺点是它的元数据（上下文/模态/档位）上游一概不提供，所以默认列表里不会有它。需要时手工启用（以 opencode 为例，写进 `~/.config/opencode/opencode.json`）：
 
   ```json
   "provider": {
@@ -294,7 +294,7 @@ DevEco 对短时间新建会话数量有限制（`UserSessionLimitExceeded`）�
 ```bash
 export ANTHROPIC_BASE_URL=http://127.0.0.1:17128/anthropic
 export ANTHROPIC_API_KEY=opencode-oauth-dummy-key
-export ANTHROPIC_MODEL=GLM-5.1
+export ANTHROPIC_MODEL=GLM-5.1-DevEco
 ```
 
 然后正常启动 Claude Code 即可。流式传输、工具调用、thinking 块和图片内容都支持。
@@ -306,8 +306,8 @@ export ANTHROPIC_MODEL=GLM-5.1
 代理把日志打到 stdout（info）和 stderr（warn/error）—— 前台运行就在终端，后台就在你重定向的文件里。每个请求产生一对日志：
 
 ```
-[2026-06-14T16:53:24.999Z] [INFO] -> POST stream model=GLM-5.1
-[2026-06-14T16:53:27.150Z] [INFO] <- 200 2151ms in=2677 out=7 model=GLM-5.1 (backend: GLM5_1_W4A8-1.0.0)
+[2026-06-14T16:53:24.999Z] [INFO] -> POST stream model=GLM-5.1-DevEco
+[2026-06-14T16:53:27.150Z] [INFO] <- 200 2151ms in=2677 out=7 model=GLM-5.1-DevEco (backend: GLM5_1_W4A8-1.0.0)
 ```
 
 `in=`/`out=` 是输入与输出 token 数，末尾 `backend:` 是 DevEco 实际调度的模型。token 刷新、`401` 重试、登录等会话事件也会记录。
@@ -354,6 +354,9 @@ export ANTHROPIC_MODEL=GLM-5.1
 
 Claude Code 长会话跑几轮就报错的问题，以及登录相关的修复，是近期的主要工作。每一项的来龙去脉见 `git log`。
 
+- **会话 ID 会归一化** —— ZCode 在 `x-session-id` 里发 36 位带连字符 UUID，而上游要求 `Session-Id` 不超过 32 位；代理现在把 UUID 压成 32 位（更长的 ID 做稳定哈希），ZCode 和 opencode 都能正常用。
+- **模型对外使用 DevEco 专用名** —— 模型列表和注入的目录统一用 `GLM-5.1-DevEco` / `GLM-5.3-DevEco`，明确这是华为部署的版本而不是智谱公版；旧的裸 id 仍作为兼容别名接受，转发时仍用上游 id。
+- **渠道限制可见且会被执行** —— `/v2/models` 为 GLM-5.1-DevEco/5.3-DevEco 返回 `context_length: 170000` / `max_output_tokens: 32000`；超过 32K 的 `max_tokens` 会被压到 32K，上游明确的长度错误会附上渠道上限提示。GLM 的 403 `ModelServiceError` 保持原样——它既可能是长度也可能是过载，不能强行归因。
 - **网关请求头对齐上游契约** —— 推理和 `exitSessionQueue` 现在都带 `x-deveco-session` / `x-deveco-task` / `x-deveco-client`，两边共用同一个每轮 task id；`x-deveco-project` / `x-deveco-parent-session` 有则透传。旧的 `Chat-Id` / `Session-Id` 继续保留兼容。
 - **视觉兜底模型换代** —— 旧的 `Qwen3_VL_235B_A22B_Instruct` 现在对图片请求返回 400 内容校验错误；兜底已改为 `Qwen3_5_397B_A17B_w8a8_single`，并用真实图片请求验证通过。
 - **企业代理可用** —— 所有出站请求（登录、token 刷新、模型列表、推理）都会读取 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`，走 undici 的代理链路；公司网络里不用再额外配置，`NO_PROXY` 也按惯例生效。
@@ -361,7 +364,7 @@ Claude Code 长会话跑几轮就报错的问题，以及登录相关的修复�
 - **非中国区账号在登录时就被拒** —— `nationalCode` 不是 `CN` 的账号会在登录阶段直接失败并给出可读提示，不再出现“登录成功、首个请求才 403”。
 - **国家/地区文件** —— 登录成功后会写 `~/.config/deveco/country.region.xml`（原子写、Windows 共享冲突重试），供 DevEco Studio 共用；写入失败只记日志，不会把成功登录变成失败。
 - **网络错误可读** —— DNS、代理、TLS、连接失败会直接说明该检查什么，而不是只抛一个 `fetch failed`。
-- **静态兜底模型更新** —— 动态目录拉取失败时回退的列表补上 `GLM-5.3`，与当前上游目录一致。
+- **静态兜底模型更新** —— 动态目录拉取失败时回退的列表补上 `GLM-5.3-DevEco`，与当前上游目录一致。
 - **上游超时改为「空闲超时」** — 只有当 DevEco **连续沉默** 120 秒才中断，取代原来那个会误杀长对话的 60 秒总时长上限。流被中断时补发真正的 Anthropic `error` 事件，不再直接截断。
 - **强制指定工具可用了** — `tool_choice: {"type":"tool"}` 原本会让整个请求失败，DevEco 只接受枚举形式。
 - **`max_tokens` 会被遵守** — Anthropic 路径上原本静默丢弃了这个字段。
@@ -369,8 +372,8 @@ Claude Code 长会话跑几轮就报错的问题，以及登录相关的修复�
 - **`logged_in` 如实上报** —— `/v2/status` 只要凭证存在且可静默刷新就返回 `logged_in:true`，而不是只在当前 access token 未过期时（它每 30 分钟过期一次）。
 - **断连即释放上游** —— 客户端断开 SSE/HTTP 连接会取消上游读取循环，不再把后端连接抽进死管道；排队等待期间就离开的客户端会被直接移出队列（不会启动上游轮次，也不再让后面的请求白付一次冷却）；优雅关停也不再被长连接卡死（5 秒宽限后强制关闭）。
 - **思考不再混进正文** —— DevEco 的 GLM 模型会把"自言自语"直接写进 `content`（以 `</think>` 收尾，没有开标签），客户端会把它当成回答的一部分。代理现在请求上游把思考放到独立通道：OpenAI 端点返回 `reasoning_content`，Anthropic 端点返回标准的 `thinking` block，正文保持干净；请求里仍带 `</think>` 的历史消息也会在转发前清理，避免污染逐轮累积。思考级别不受影响：`reasoning_effort`（含 Anthropic 的 thinking budget 映射）原样透传，实测 low/high 的思考长度差异照旧生效。
-- **思考档位可切换** —— 云端为每个模型声明的档位（GLM-5.3 是 `low/high/max`，默认 `high`）会作为 opencode 的模型变体暴露（`Ctrl+T` 切换），云端默认值随每个请求下发。客户端发来的档位若不在声明列表里，会按官方强度序就近落到声明档位：实测 GLM-5.3 的 `medium` 原本静默落到**最重档**（思考 352 字符，high 只有 103），现在正确落在 high。云端未声明档位的模型（GLM-5.1）保持官方行为——不下发、不干预。
-- **模型列表自动进 opencode** —— 成功拉取的云端目录会落盘（`<config>/opencode-deveco/models.json`，0600、原子写），config hook 启动时注入，模型选择器因此直接列出云端全部模型及其上下文长度、档位与模态；已写在 `opencode.json` 里的模型定义会与之合并（你的字段优先，云端元数据补齐），不再需要手写模型名。`small_model` 也跟随云端声明（当前为 GLM-5.3）。
+- **思考档位可切换** —— 云端为每个模型声明的档位（`GLM-5.3-DevEco` 是 `low/high/max`，默认 `high`）会作为 opencode 的模型变体暴露（`Ctrl+T` 切换），云端默认值随每个请求下发。客户端发来的档位若不在声明列表里，会按官方强度序就近落到声明档位：实测 `GLM-5.3-DevEco` 的 `medium` 原本静默落到**最重档**（思考 352 字符，high 只有 103），现在正确落在 high。完全无法识别的值（未知词汇、非字符串、空值）会被直接丢弃，交给上游默认值，不再透传给校验器；云端未声明档位的模型（`GLM-5.1-DevEco`）保留标准 OpenAI 档位，`none`/`off` 仍映射为关闭思考的请求。
+- **模型列表自动进 opencode** —— 成功拉取的云端目录会落盘（`<config>/opencode-deveco/models.json`，0600、原子写），config hook 启动时注入，模型选择器因此直接列出云端全部模型及其上下文长度、档位与模态；已写在 `opencode.json` 里的模型定义会与之合并（你的字段优先，云端元数据补齐），不再需要手写模型名。`small_model` 也跟随云端声明（当前为 `GLM-5.3-DevEco`）。
 - **识图判定跟随上游配置** —— 哪些模型需要识图转发，由上游 `modelConfig` 的 `input_modalities` 决定（随模型列表缓存 1 小时），上游新增或调整模型能力时无需改代码；模型配置不可用时回退内置列表。
 - **区域与身份门禁（对齐官方客户端）** —— 欧洲时区（含官方列表里的俄罗斯/中亚特例）的推理请求直接返回 `451` 与官方文案；非中国区账号返回 `403`；未实名账号在推理前得到"完成华为实名认证后 30 秒重试"的提示，而已实名账号零开销（不会产生额外查询）。
 - **刷新/登出竞态护栏** —— 登出或取消登录会作废在途的登录交换，token 不会在登出后被写回；刷新完成后会复核 jwtToken 是否已变，避免被在途刷新"复活"会话。

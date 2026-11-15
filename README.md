@@ -78,11 +78,11 @@ proxy. The `apiKey` is a placeholder — the proxy injects the real token.
         "apiKey": "opencode-oauth-dummy-key"
       },
       "models": {
-        "GLM-5.1": {
-          "name": "GLM-5.1",
+        "GLM-5.1-DevEco": {
+          "name": "GLM-5.1-DevEco",
           "reasoning": true,
           "tool_call": true,
-          "limit": { "context": 170000, "output": 131072 },
+          "limit": { "context": 170000, "output": 32000 },
           "modalities": { "input": ["text"], "output": ["text"] }
         }
       }
@@ -211,14 +211,15 @@ tunnel is the intended way in — don't expose the port instead.
 ## Verify
 
 ```bash
-opencode models                           # should list deveco/GLM-5.1 and deveco/GLM-5.3
-opencode run "say hi" -m deveco/GLM-5.1  # real request through the proxy
+opencode models                                # should list deveco/GLM-5.1-DevEco and deveco/GLM-5.3-DevEco
+opencode run "say hi" -m deveco/GLM-5.1-DevEco # real request through the proxy
 ```
 
-> The model ids are **`GLM-5.1` / `GLM-5.3`** (what DevEco's backend actually
-> advertises). If you see `ProviderModelNotFoundError` with
-> `suggestions: ["GLM-5.1"]`, you used the old `glm-5` name — switch to
-> `GLM-5.1`.
+> The exposed ids are **`GLM-5.1-DevEco` / `GLM-5.3-DevEco`** — Huawei's
+> deployed variants, not the public Zhipu models. The proxy accepts the old
+> bare ids (`GLM-5.1` / `GLM-5.3`) for compatibility, but the model list and
+> docs use the `-DevEco` names. If you see `ProviderModelNotFoundError` with
+> `suggestions: ["GLM-5.1-DevEco"]`, switch to that name.
 
 ---
 
@@ -228,7 +229,7 @@ opencode run "say hi" -m deveco/GLM-5.1  # real request through the proxy
 |---|---|
 | `POST /v2/chat/completions` | OpenAI-compatible — forwarded to DevEco (non-streaming by default; an explicit `"stream": true` opts into SSE) |
 | `POST /anthropic/v1/messages` | Anthropic Messages API — auto-translated to/from OpenAI |
-| `GET  /v2/models` | DevEco model list (dynamic, static fallback; 1-hour cache TTL) |
+| `GET  /v2/models` | DevEco model list (dynamic, static fallback; 1-hour cache TTL), with `context_length` / `max_output_tokens` |
 | `GET  /v2/login` | 302 → Huawei OAuth page (returns `{login_url}` to non-redirecting clients) |
 | `GET  /v2/status` | `{ logged_in, user, expires_in_ms }` |
 | `GET  /v2/logout` | clear stored credentials |
@@ -247,8 +248,8 @@ grow ~1.25× per step.
 | Model | Declared `context_window` | Measured pass | Measured reject | Verdict |
 |---|---|---|---|---|
 | `deepseek-v4-flash` | not declared (absent from the model list) | 1,042,769 tokens (~85 s) | 1,044,994 → `400 OverLimitRequestBody` | hard cap **1,044,480** tokens (≈1020K) |
-| `GLM-5.3` | 170,000 | 198,197 tokens (116 s) | 209,880 → `403 ModelServiceError` | effective **≈200K** |
-| `GLM-5.1` | 170,000 | 198,192 tokens (49 s) | 204,110 → `403 ModelServiceError` | effective **≈200K** |
+| `GLM-5.3-DevEco` (upstream `GLM-5.3`) | 170,000 | 198,197 tokens (116 s) | 209,880 → `403 ModelServiceError` | effective **≈200K** |
+| `GLM-5.1-DevEco` (upstream `GLM-5.1`) | 170,000 | 198,192 tokens (49 s) | 204,110 → `403 ModelServiceError` | effective **≈200K** |
 
 - **`deepseek-v4-flash` enforces a hard cap** and names it in the error:
   `the prompt length 1044994 must less than the maximum input length 1044480`.
@@ -258,12 +259,18 @@ grow ~1.25× per step.
   out`) after ~35 s — a fast rejection, not a genuine timeout. 198K passes
   consistently, 204K and above fails consistently, so ≈200K is an **observed**
   ceiling rather than a declared one. Leave headroom in practice (~190K for
-  GLM-5.1, ~180K for GLM-5.3 — the latter already takes 116 s at 198K).
+  GLM-5.1-DevEco, ~180K for GLM-5.3-DevEco — the latter already takes 116 s at
+  198K).
 - GLM tokenizes the same text more cheaply (~1.17 tokens/word vs deepseek's
   1.23), yet its usable window is an order of magnitude smaller.
+> The channel currently declares **170,000 context / 32,000 max output** for
+> both `GLM-5.1-DevEco` and `GLM-5.3-DevEco`. That is lower than the public Zhipu specs
+> (5.1: 200K/131K, 5.3: 1M/131K); the static fallback and example config use
+> the channel's numbers.
+
 - **`deepseek-v4-flash` is a hidden model**: it appears neither in
   `GET /v2/models` nor in the upstream `modelConfig` (which only lists
-  `GLM-5.3` / `GLM-5.1` / `Qwen3_5_397B_A17B_w8a8_single`). Clients that build
+  upstream ids `GLM-5.3` / `GLM-5.1` / `Qwen3_5_397B_A17B_w8a8_single`). Clients that build
   their model list dynamically will not see it — pin the model name by hand.
   The proxy does not gate model names, but the upstream publishes no metadata
   for it (context, modalities, tiers), which is why it stays out of the default
@@ -308,7 +315,7 @@ Set these environment variables before launching Claude Code:
 ```bash
 export ANTHROPIC_BASE_URL=http://127.0.0.1:17128/anthropic
 export ANTHROPIC_API_KEY=opencode-oauth-dummy-key
-export ANTHROPIC_MODEL=GLM-5.1
+export ANTHROPIC_MODEL=GLM-5.1-DevEco
 ```
 
 Then start Claude Code normally. Streaming, tool use, thinking blocks and image
@@ -323,8 +330,8 @@ in the foreground, or wherever you redirected it. Each request produces a pair o
 lines:
 
 ```
-[2026-06-14T16:53:24.999Z] [INFO] -> POST stream model=GLM-5.1
-[2026-06-14T16:53:27.150Z] [INFO] <- 200 2151ms in=2677 out=7 model=GLM-5.1 (backend: GLM5_1_W4A8-1.0.0)
+[2026-06-14T16:53:24.999Z] [INFO] -> POST stream model=GLM-5.1-DevEco
+[2026-06-14T16:53:27.150Z] [INFO] <- 200 2151ms in=2677 out=7 model=GLM-5.1-DevEco (backend: GLM5_1_W4A8-1.0.0)
 ```
 
 `in=`/`out=` are prompt and completion tokens, and the trailing `backend:` is the
@@ -386,6 +393,19 @@ Long Claude Code sessions used to break after a few rounds; the fixes for that
 and for login are the recent bulk of the work. `git log` has the reasoning
 behind each.
 
+- **Session ids are normalized for the gateway** — ZCode sends a 36-character
+  UUID in `x-session-id`; DevEco rejects a `Session-Id` longer than 32
+  characters. The proxy now compacts UUIDs (and hashes anything longer) to a
+  32-char id, so ZCode and opencode both work.
+- **Models are exposed under DevEco-specific names** — the model list and
+  injected catalog use `GLM-5.1-DevEco` / `GLM-5.3-DevEco`, making clear these
+  are Huawei-deployed variants rather than public Zhipu models. The bare
+  upstream ids are still accepted as aliases and stay on the wire.
+- **Channel limits are visible and enforced** — `/v2/models` reports
+  `context_length: 170000` and `max_output_tokens: 32000` for GLM-5.1-DevEco/5.3-DevEco.
+  A larger `max_tokens` is clamped to 32K, and explicit over-limit upstream
+  errors get a hint naming the channel limit. GLM's 403 `ModelServiceError` is
+  left alone: it can mean overload as well as a length overflow.
 - **Gateway headers follow the upstream contract** — inference and
   `exitSessionQueue` now send `x-deveco-session` / `x-deveco-task` /
   `x-deveco-client`; the same per-turn task id is used on both calls, and
@@ -411,7 +431,7 @@ behind each.
 - **Readable network failures** — DNS, proxy, TLS and connection failures now
   say what to check instead of surfacing a bare `fetch failed`.
 - **Static fallback refreshed** — when the dynamic catalog cannot be fetched,
-  the fallback list now includes `GLM-5.3` alongside `GLM-5.1`.
+  the fallback list now includes `GLM-5.3-DevEco` alongside `GLM-5.1-DevEco`.
 - **Idle-based upstream timeout** — a turn is cut only after DevEco goes *silent*
   for 120s, instead of a 60s cap on its total length that killed long
   conversations. Interrupted streams now emit a real Anthropic `error` event
@@ -446,12 +466,15 @@ behind each.
   turns. The thinking *level* is untouched — `reasoning_effort` (and the
   Anthropic thinking-budget mapping) passes through and still takes effect.
 - **Reasoning tiers are switchable** — the tiers the cloud declares per model
-  (GLM-5.3: `low/high/max`, default `high`) become opencode model variants
+  (`GLM-5.3-DevEco`: `low/high/max`, default `high`) become opencode model variants
   (`Ctrl+T`) and the declared default rides every request. A client tier outside
-  that list is snapped onto the nearest declared one: measured, GLM-5.3
+  that list is snapped onto the nearest declared one: measured, `GLM-5.3-DevEco`
   `medium` used to land on the *heaviest* tier (352 chars of reasoning against
-  103 for `high`) and now lands on `high`. A model that declares no tiers
-  (GLM-5.1) is left alone, exactly as the official client leaves it.
+  103 for `high`) and now lands on `high`. A value the proxy cannot map at all
+  (unknown vocabulary, a non-string, or an empty value) is dropped so the
+  upstream default applies — it is never forwarded to the validator. A model
+  that declares no tiers (`GLM-5.1-DevEco`) keeps the standard OpenAI tiers
+  unchanged and still maps `none`/`off` to a disabled-thinking request.
 - **The model list reaches opencode by itself** — a successful fetch is
   persisted (`<config>/opencode-deveco/models.json`, 0600, atomic write) and
   injected at startup, so the picker lists every cloud model with its context

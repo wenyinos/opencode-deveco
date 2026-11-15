@@ -18,6 +18,7 @@
 import {
   DEVECO_TEXT_ONLY_MODELS,
   DEVECO_VISION_FALLBACK_MODEL,
+  upstreamModelId,
 } from "./config.js"
 import { textOnlyModelsFromConfig } from "./models.js"
 
@@ -66,7 +67,7 @@ export function textOnlyModelIds(): Set<string> {
     return new Set(
       override
         .split(",")
-        .map((s) => s.trim())
+        .map((s) => upstreamModelId(s.trim()))
         .filter(Boolean),
     )
   }

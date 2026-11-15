@@ -27,11 +27,14 @@ import {
   EXIT_QUEUE_GRACE_MS,
   PLUGIN_VERSION,
   UPSTREAM_IDLE_TIMEOUT_MS,
+  exposedModelId,
   log,
   maxConcurrency,
   maxQueue,
+  normalizeAffinityId,
   queueCooldownMs,
   toolImprovementEnabled,
+  upstreamModelId,
 } from "./config.js"
 import {
   CHINA_ACCOUNT_ONLY_MESSAGE,
@@ -51,6 +54,7 @@ import {
 import { applyVisionRouting } from "./vision-routing.js"
 import { normalizeOpenAIChatBody } from "./openai-normalize.js"
 import { envFetch } from "./env-fetch.js"
+import { appendLimitHint, describeUpstreamLimitError } from "./upstream-limit.js"
 
 const DEVECO_ORIGIN = new URL(DEVECO_API_BASE).origin // https://cn.devecostudio.huawei.com
 const DEVECO_API_PREFIX = new URL(DEVECO_API_BASE).pathname.replace(/\/$/, "") // /sse/codeGenie/maas/v2
@@ -349,8 +353,8 @@ export function sessionKeyFromHeaders(
     headers["x-deveco-session"] ??
     headers["x-session-affinity"] ??
     headers["x-session-id"]
-  if (typeof value === "string" && value.trim()) return value.trim()
-  return null
+  if (typeof value !== "string") return null
+  return normalizeAffinityId(value) || null
 }
 
 /** Read a single request header, ignoring repeated/empty values. */
@@ -569,7 +573,8 @@ export class DevEcoProxy {
     req: http.IncomingMessage,
   ): Record<string, string> {
     const project = requestHeader(req, "x-deveco-project")
-    const parentSession = requestHeader(req, "x-deveco-parent-session")
+    const parentRaw = requestHeader(req, "x-deveco-parent-session")
+    const parentSession = parentRaw ? normalizeAffinityId(parentRaw) : undefined
     return {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
@@ -789,7 +794,15 @@ export class DevEcoProxy {
         // available, fall back to the static defaults when logged out.
         const token = await this.ensureToken(false)
         const cfg = await getDevecoProviderConfig(token)
-        const data = Object.keys(cfg.models ?? {}).map((id) => ({ id, object: "model" }))
+        // Expose the channel's real limits next to the id. OpenAI's model
+        // schema does not standardize these fields, but compatible agents can
+        // read them; clients that ignore them fall back to their own registry.
+        const data = Object.entries(cfg.models ?? {}).map(([id, info]) => ({
+          id: exposedModelId(id),
+          object: "model",
+          ...(info.limit?.context ? { context_length: info.limit.context } : {}),
+          ...(info.limit?.output ? { max_output_tokens: info.limit.output } : {}),
+        }))
         return this.json(res, 200, { object: "list", data })
       }
 
@@ -899,6 +912,7 @@ export class DevEcoProxy {
     let model = "?"
     let convKey = crypto.randomUUID().replace(/-/g, "")
     let parsedBody: Record<string, unknown> | null = null
+    let modelRewritten = false
     try {
       const parsed = JSON.parse(bodyBuffer.toString("utf8"))
       if (parsed && typeof parsed === "object") {
@@ -907,7 +921,16 @@ export class DevEcoProxy {
         // SSE (opencode's streamText always sends `stream: true`; other clients
         // usually expect a JSON reply when they don't ask for a stream).
         if (obj.stream !== true) stream = false
-        if (typeof obj.model === "string") model = obj.model
+        if (typeof obj.model === "string") {
+          model = obj.model
+          // The public name carries the -DevEco suffix; the wire protocol
+          // still expects the bare upstream id.
+          const upstream = upstreamModelId(model)
+          if (upstream !== model) {
+            obj.model = upstream
+            modelRewritten = true
+          }
+        }
         // Prefer an explicit client session id; otherwise hash the ORIGINAL
         // body (vision rerouting may rewrite messages upstream, but the
         // conversation identity must stay stable).
@@ -953,7 +976,10 @@ export class DevEcoProxy {
     // DevEco-required headers. The task id correlates this turn with its
     // exitSessionQueue call; a client that already has one may pass it in.
     const chatId = this.chatIdFor(convKey)
-    const taskId = requestHeader(req, "x-deveco-task") ?? crypto.randomUUID().replace(/-/g, "")
+    const incomingTask = requestHeader(req, "x-deveco-task")
+    const taskId = incomingTask
+      ? normalizeAffinityId(incomingTask)
+      : crypto.randomUUID().replace(/-/g, "")
     const headers = this.buildDevEcoHeaders(accessToken, convKey, chatId, taskId, req)
 
     // DevEco rejects several OpenAI-side shapes (the "developer" role, the
@@ -963,13 +989,16 @@ export class DevEcoProxy {
     let routedBody: Record<string, unknown> | null = null
     if (parsedBody) {
       const normalized = normalizeOpenAIChatBody(parsedBody)
-      if (normalized.changed) routedBody = normalized.body
+      // A renamed model id must be re-serialized even when no other rewrite
+      // fired, or the exposed name would reach the upstream unchanged.
+      if (normalized.changed || modelRewritten) routedBody = normalized.body
     }
 
     // Vision fallback: a text-only model asking about an image in the newest
     // user message goes to the vision model instead; stale images in history
     // are replaced with placeholders so GLM keeps working on later turns.
-    let upstreamModel = model
+    let upstreamModel = upstreamModelId(model)
+    let visionRerouted = false
     // fetch's BodyInit type under our DOM lib settings doesn't accept Buffer/
     // Uint8Array directly, but node's fetch accepts raw bytes at runtime.
     let bodyInit = bodyBuffer as unknown as BodyInit
@@ -978,6 +1007,7 @@ export class DevEcoProxy {
       const routing = applyVisionRouting(bodyForRouting)
       if (routing) {
         upstreamModel = routing.upstreamModel
+        visionRerouted = routing.rerouted
         if (routing.rerouted || routing.imagesStripped) {
           routedBody = routing.body
           bodyInit = Buffer.from(JSON.stringify(routedBody)) as unknown as BodyInit
@@ -1011,7 +1041,7 @@ export class DevEcoProxy {
     const ctx = { model, stream, upstreamUrl, t0: Date.now() }
     log.info(
       `-> POST ${stream ? "stream" : "no-stream"} model=${model}` +
-        (upstreamModel !== model ? ` → vision:${upstreamModel}` : ""),
+        (visionRerouted ? ` → vision:${upstreamModel}` : ""),
     )
 
     const budget = idleBudget(UPSTREAM_IDLE_TIMEOUT_MS)
@@ -1056,6 +1086,7 @@ export class DevEcoProxy {
         }
       }
 
+      responseToPipe = await this.annotateLimitError(responseToPipe)
       // `clientGone`, not the merged signal: only a hang-up should demote the
       // log line, while an upstream idle timeout must stay an error.
       await this.pipeResponse(
@@ -1100,6 +1131,8 @@ export class DevEcoProxy {
 
     const isStream = anthropicReq.stream === true
     const model = anthropicReq.model
+    // Accept the public -DevEco name while keeping the upstream id on the wire.
+    anthropicReq.model = upstreamModelId(model)
 
     // Timezone check first, exactly as on the OpenAI path: no credentials
     // needed, so a blocked request never starts a login.
@@ -1136,7 +1169,8 @@ export class DevEcoProxy {
     // Same vision fallback as the OpenAI path, applied to the transformed body.
     const routing = applyVisionRouting(normalized.body)
     const openaiBody = JSON.stringify(routing?.body ?? normalized.body)
-    const upstreamModel = routing?.upstreamModel ?? model
+    const upstreamModel = routing?.upstreamModel ?? upstreamModelId(model)
+    const visionRerouted = routing?.rerouted === true
 
     const upstreamPath = isStream
       ? `${DEVECO_API_PREFIX}/chat/completions`
@@ -1145,7 +1179,10 @@ export class DevEcoProxy {
 
     const convKey = this.sessionKeyFromRequest(req) ?? conversationKey(anthropicReq)
     const chatId = this.chatIdFor(convKey)
-    const taskId = requestHeader(req, "x-deveco-task") ?? crypto.randomUUID().replace(/-/g, "")
+    const incomingTask = requestHeader(req, "x-deveco-task")
+    const taskId = incomingTask
+      ? normalizeAffinityId(incomingTask)
+      : crypto.randomUUID().replace(/-/g, "")
     const headers = this.buildDevEcoHeaders(accessToken, convKey, chatId, taskId, req)
 
     // Same cancellable wait as the OpenAI path, and the same teardown: the slot
@@ -1172,7 +1209,7 @@ export class DevEcoProxy {
     const t0 = Date.now()
     log.info(
       `-> POST anthropic/${isStream ? "stream" : "no-stream"} model=${model}` +
-        (upstreamModel !== model ? ` → vision:${upstreamModel}` : ""),
+        (visionRerouted ? ` → vision:${upstreamModel}` : ""),
     )
 
     const budget = idleBudget(UPSTREAM_IDLE_TIMEOUT_MS)
@@ -1231,9 +1268,14 @@ export class DevEcoProxy {
       void finishTurn()
       const errText = await upstream.text().catch(() => "")
       log.error(`anthropic upstream error: HTTP ${upstream.status}`, { body: errText.slice(0, 200) })
+      const limitHint = describeUpstreamLimitError(upstream.status, errText)
       return this.json(res, upstream.status, {
         type: "error",
-        error: { type: "api_error", message: `Upstream returned HTTP ${upstream.status}: ${errText.slice(0, 500)}` },
+        error: {
+          type: "api_error",
+          message: `Upstream returned HTTP ${upstream.status}: ${errText.slice(0, 500)}` +
+            (limitHint ? `\n\n${limitHint}` : ""),
+        },
       })
     }
 
@@ -1294,6 +1336,30 @@ export class DevEcoProxy {
     } finally {
       await finishTurn()
     }
+  }
+
+  /**
+   * Add the channel-limit hint to an over-limit error before it reaches an
+   * OpenAI-compatible client. `clone()` keeps the original response intact for
+   * every non-limit error, so the hot path is unaffected.
+   */
+  private async annotateLimitError(upstream: Response): Promise<Response> {
+    if (upstream.status !== 400 && upstream.status !== 413) return upstream
+    const contentType = upstream.headers.get("content-type") ?? ""
+    if (!contentType.toLowerCase().includes("json")) return upstream
+    let text: string
+    try {
+      text = await upstream.clone().text()
+    } catch {
+      return upstream
+    }
+    const hint = describeUpstreamLimitError(upstream.status, text)
+    if (!hint) return upstream
+    log.warn("proxy: upstream rejected the prompt as too long", { status: upstream.status })
+    return new Response(appendLimitHint(text, hint), {
+      status: upstream.status,
+      headers: { "Content-Type": contentType || "application/json" },
+    })
   }
 
   private async pipeResponse(

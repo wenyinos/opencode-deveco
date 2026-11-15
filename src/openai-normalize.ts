@@ -23,7 +23,7 @@
 // carries such a scratchpad is cleaned on the way in. The thinking *level* is
 // never touched — these models cannot stop thinking upstream anyway.
 
-import { log } from "./config.js"
+import { channelOutputLimit, log } from "./config.js"
 import { reasoningLevelsFromConfig } from "./models.js"
 
 export interface BodyNormalization {
@@ -139,6 +139,29 @@ export function normalizeOpenAIMaxTokens(
   return { body: rest, changed: true }
 }
 
+/**
+ * Clamp an explicit output cap onto the limit the DevEco channel declares for
+ * this model. A client that assumes the public model's 131K would otherwise
+ * push the request past the product cap; lowering it is friendlier than an
+ * upstream 400, and the request still produces a complete answer.
+ */
+export function normalizeOpenAIOutputLimit(
+  body: Record<string, unknown>,
+): BodyNormalization {
+  const model = typeof body.model === "string" ? body.model : ""
+  const cap = channelOutputLimit(model)
+  const current = body.max_tokens
+  if (!cap || typeof current !== "number" || current <= cap) {
+    return { body, changed: false }
+  }
+  log.debug("proxy: max_tokens clamped to the channel output limit", {
+    model,
+    from: current,
+    to: cap,
+  })
+  return { body: { ...body, max_tokens: cap }, changed: true }
+}
+
 /** Effort tiers weakest to strongest, mirroring the upstream plugin's order
  * (transform.ts: OPENAI_EFFORTS plus GLM's `max`). */
 const EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
@@ -180,38 +203,70 @@ export function snapEffortToDeclared(value: string, levels: string[]): string {
  * upstream; it is snapped onto the nearest declared tier instead.
  *
  * When the cloud declares nothing (a model without effort support, or no
- * config cached yet), the historical best-effort applies: "none"/"off" is
- * expressed as thinking:{type:"disabled"} — which today's GLM models ignore,
- * but which is the correct way to say it and will work the day the upstream
- * honours it — and every other value is passed through.
+ * config cached yet), "none"/"off" is expressed as thinking:{type:"disabled"}
+ * — which today's GLM models ignore, but which is the correct way to say it
+ * and will work the day the upstream honours it. A value from the standard
+ * OpenAI vocabulary is passed through; anything the proxy cannot recognise is
+ * dropped so the upstream default applies instead of a validation error.
  */
+/**
+ * Drop an effort value the proxy cannot map. The upstream then applies its
+ * own default, which is safer than forwarding an unknown enum and risking a
+ * 400 from a stricter validator.
+ */
+function dropUnsupportedEffort(
+  body: Record<string, unknown>,
+  effort: unknown,
+): BodyNormalization {
+  const rest: Record<string, unknown> = { ...body }
+  delete rest.reasoning_effort
+  log.debug("proxy: dropped unsupported reasoning_effort", { effort: String(effort) })
+  return { body: rest, changed: true }
+}
+
 export function normalizeOpenAIReasoningEffort(
   body: Record<string, unknown>,
 ): BodyNormalization {
   const effort = body.reasoning_effort
-  if (typeof effort !== "string") return { body, changed: false }
+  if (effort === undefined) return { body, changed: false }
+  if (typeof effort !== "string") return dropUnsupportedEffort(body, effort)
   const value = effort.trim().toLowerCase()
+  if (!value) return dropUnsupportedEffort(body, effort)
 
   const modelId = typeof body.model === "string" ? body.model : undefined
   const declared = modelId ? reasoningLevelsFromConfig(modelId) : null
   if (declared) {
-    const snapped = snapEffortToDeclared(value, declared)
-    if (snapped === effort) return { body, changed: false }
-    log.debug("proxy: reasoning_effort snapped to a declared tier", {
-      from: effort,
-      to: snapped,
-      declared: declared.join("|"),
-    })
-    return { body: { ...body, reasoning_effort: snapped }, changed: true }
+    if (declared.includes(value)) {
+      if (value === effort) return { body, changed: false }
+      return { body: { ...body, reasoning_effort: value }, changed: true }
+    }
+    // "off" is the OpenAI alias for "none"; map it through the same table so
+    // a declared model never receives an enum value it did not advertise.
+    const snapped = snapEffortToDeclared(value === "off" ? "none" : value, declared)
+    if (declared.includes(snapped)) {
+      log.debug("proxy: reasoning_effort snapped to a declared tier", {
+        from: effort,
+        to: snapped,
+        declared: declared.join("|"),
+      })
+      return { body: { ...body, reasoning_effort: snapped }, changed: true }
+    }
+    return dropUnsupportedEffort(body, effort)
   }
 
-  if (value !== "none" && value !== "off") return { body, changed: false }
+  if (value === "none" || value === "off") {
+    const rest: Record<string, unknown> = { ...body }
+    delete rest.reasoning_effort
+    rest.thinking = { type: "disabled" }
+    log.debug("proxy: reasoning_effort none/off → thinking disabled", { effort })
+    return { body: rest, changed: true }
+  }
 
-  const rest: Record<string, unknown> = { ...body }
-  delete rest.reasoning_effort
-  rest.thinking = { type: "disabled" }
-  log.debug("proxy: reasoning_effort none/off → thinking disabled", { effort })
-  return { body: rest, changed: true }
+  if (EFFORT_ORDER.includes(value)) {
+    if (value === effort) return { body, changed: false }
+    return { body: { ...body, reasoning_effort: value }, changed: true }
+  }
+  return dropUnsupportedEffort(body, effort)
 }
 
 /**
@@ -292,6 +347,7 @@ export function normalizeOpenAIChatBody(
     normalizeOpenAIAssistantThink,
     normalizeOpenAIDeveloperRole,
     normalizeOpenAIMaxTokens,
+    normalizeOpenAIOutputLimit,
     normalizeOpenAIReasoningEffort,
     normalizeOpenAIThinkingSplit,
     normalizeOpenAIToolChoice,
