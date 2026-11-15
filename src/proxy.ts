@@ -25,6 +25,7 @@ import {
   DEVECO_BASE_URL,
   DEVECO_EXIT_QUEUE_URL,
   EXIT_QUEUE_GRACE_MS,
+  PLUGIN_VERSION,
   UPSTREAM_IDLE_TIMEOUT_MS,
   log,
   maxConcurrency,
@@ -352,6 +353,12 @@ export function sessionKeyFromHeaders(
   return null
 }
 
+/** Read a single request header, ignoring repeated/empty values. */
+function requestHeader(req: http.IncomingMessage, name: string): string | undefined {
+  const value = req.headers[name]
+  return typeof value === "string" && value.trim() ? value.trim() : undefined
+}
+
 export class DevEcoProxy {
   private readonly port: number
   private readonly hostname: string
@@ -486,7 +493,13 @@ export class DevEcoProxy {
    * handing the concurrency slot to the next turn. Never rejects: this runs on
    * the slot-release path, where a throw would leak the slot.
    */
-  private exitQueue(key: string, chatId: string, model: string, token: string): Promise<void> {
+  private exitQueue(
+    key: string,
+    chatId: string,
+    model: string,
+    token: string,
+    taskId: string,
+  ): Promise<void> {
     // `encodeURIComponent` throws on a lone surrogate, and the model name is
     // client-supplied: an exit we cannot address must not blow up the release.
     let url = DEVECO_EXIT_QUEUE_URL
@@ -503,6 +516,8 @@ export class DevEcoProxy {
             "Content-Type": "application/json",
             "Session-Id": key,
             "Chat-Id": chatId,
+            "x-deveco-session": key,
+            "x-deveco-task": taskId,
             Authorization: `Bearer ${token}`,
           },
           signal: AbortSignal.timeout(5_000),
@@ -550,13 +565,22 @@ export class DevEcoProxy {
     accessToken: string,
     convKey: string,
     chatId: string,
+    taskId: string,
+    req: http.IncomingMessage,
   ): Record<string, string> {
+    const project = requestHeader(req, "x-deveco-project")
+    const parentSession = requestHeader(req, "x-deveco-parent-session")
     return {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
       lang: "en",
       "Chat-Id": chatId,
       "Session-Id": convKey,
+      "x-deveco-session": convKey,
+      "x-deveco-task": taskId,
+      "x-deveco-client": `deveco-code@${PLUGIN_VERSION}`,
+      ...(project ? { "x-deveco-project": project } : {}),
+      ...(parentSession ? { "x-deveco-parent-session": parentSession } : {}),
       "User-Agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
       "accept-language": "zh-CN",
@@ -926,9 +950,11 @@ export class DevEcoProxy {
       : `${DEVECO_API_PREFIX}/no-stream/chat/completions`
     const upstreamUrl = `${DEVECO_ORIGIN}${upstreamPath}`
 
-    // DevEco-required headers.
+    // DevEco-required headers. The task id correlates this turn with its
+    // exitSessionQueue call; a client that already has one may pass it in.
     const chatId = this.chatIdFor(convKey)
-    const headers = this.buildDevEcoHeaders(accessToken, convKey, chatId)
+    const taskId = requestHeader(req, "x-deveco-task") ?? crypto.randomUUID().replace(/-/g, "")
+    const headers = this.buildDevEcoHeaders(accessToken, convKey, chatId, taskId, req)
 
     // DevEco rejects several OpenAI-side shapes (the "developer" role, the
     // tool_choice object form) and ignores max_completion_tokens; rewrite them
@@ -1043,7 +1069,7 @@ export class DevEcoProxy {
       budget.done()
       // Hand the slot over only once DevEco confirms its queue slot is gone
       // (bounded inside exitQueue), and only after this turn stopped streaming.
-      await this.exitQueue(convKey, chatId, upstreamModel, accessToken)
+      await this.exitQueue(convKey, chatId, upstreamModel, accessToken, taskId)
       this.gate.release()
     }
   }
@@ -1119,7 +1145,8 @@ export class DevEcoProxy {
 
     const convKey = this.sessionKeyFromRequest(req) ?? conversationKey(anthropicReq)
     const chatId = this.chatIdFor(convKey)
-    const headers = this.buildDevEcoHeaders(accessToken, convKey, chatId)
+    const taskId = requestHeader(req, "x-deveco-task") ?? crypto.randomUUID().replace(/-/g, "")
+    const headers = this.buildDevEcoHeaders(accessToken, convKey, chatId, taskId, req)
 
     // Same cancellable wait as the OpenAI path, and the same teardown: the slot
     // goes to the next turn only after exitQueue settles. Callers that still owe
@@ -1151,7 +1178,7 @@ export class DevEcoProxy {
     const budget = idleBudget(UPSTREAM_IDLE_TIMEOUT_MS)
     const finishTurn = async (): Promise<void> => {
       budget.done()
-      await this.exitQueue(convKey, chatId, upstreamModel, accessToken)
+      await this.exitQueue(convKey, chatId, upstreamModel, accessToken, taskId)
       this.gate.release()
     }
 

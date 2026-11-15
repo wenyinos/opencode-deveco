@@ -222,7 +222,7 @@ export async function getDevecoProviderConfig(accessToken: string): Promise<Prov
   cachedConfig = null
 
   // Keep this semantic intentionally: upstream puts the vision-only model
-  // (Qwen3_VL_...; tool_call: none) into task_default_model_map.blacklist, so
+  // (tool_call: none) into task_default_model_map.blacklist, so
   // the public list keeps the text models that support the full agent/tool
   // loop. The hidden VL model is still used internally as the image fallback
   // (src/vision-routing.ts), so no blacklist change is needed.

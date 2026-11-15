@@ -57,12 +57,13 @@ opencode 已发布的二进制**不加载外部插件的 auth hooks**。实际�
 
 - 非流式必须用 `/no-stream/chat/completions` 路径(靠 URL 区分流式与否,不靠 body 的 `stream` 字段)
 - 必需 headers:`Authorization: Bearer`、`Chat-Id`(32 位去连字符 UUID)、`lang`、`User-Agent`、`accept-language`
+- 网关亲和 headers(对齐上游 `a0090b2d6`/`a074b2c6b`):`x-deveco-session`、`x-deveco-task`(每轮 32 位 id,推理与 exitSessionQueue 必须用同一个)、`x-deveco-client`(`deveco-code@<version>`);`x-deveco-project` / `x-deveco-parent-session` 有则透传。旧 `Chat-Id`/`Session-Id` 保留兼容
 - 模型 id 是 `GLM-5.1` / `GLM-5.3`(不是 `glm-5`);`deepseek-v4-flash` 是隐藏模型,不在动态模型列表中,须手工指定
 - **`tool_choice` 是枚举**,只收 `"auto"|"none"|"required"`。发 OpenAI 对象形式会让整个请求 400;指定某工具靠 `"required"` + 收窄 `tools` 模拟
 - **服务端按 (`Session-Id`, `Chat-Id`) 维护轮次状态**,每轮结束 POST `exitSessionQueue` 释放槽位(等待上限 3s);Chat-Id 以对话**首条 user 消息**为键(不是 `messages[0]`——那是 system prompt,易变会话会疯狂新开上游 session),`DEVECO_SESSION_KEY_MODE=system-first` 恢复旧行为;客户端可用 `x-session-id` 等头显式固定
 - 聊天用**空闲超时**(沉默 120s 才断,`UPSTREAM_IDLE_TIMEOUT_MS`),不能用总时长超时——`AbortSignal.timeout` 会掐断已在流的请求,长对话必然误伤;登录/token 接口是普通 20s 超时
 - 同一 jwtToken 不支持两个进程并发刷新,只能跑单实例
-- 文本模型(GLM-5.1/5.3,`input_modalities: ["text"]`)收到含图请求会 403,代理自动改路由到视觉模型 `Qwen3_VL_235B_A22B_Instruct`(`vision-routing.ts`;`DEVECO_VISION_MODEL` / `DEVECO_TEXT_ONLY_MODELS` 可覆盖)
+- 文本模型(GLM-5.1/5.3,`input_modalities: ["text"]`)收到含图请求会 403,代理自动改路由到视觉模型 `Qwen3_5_397B_A17B_w8a8_single`(`vision-routing.ts`;`DEVECO_VISION_MODEL` / `DEVECO_TEXT_ONLY_MODELS` 可覆盖);旧 `Qwen3_VL_235B_A22B_Instruct` 已对图片请求返回 400
 - 并发控制:同时仅 1 个上游生成(`DEVECO_MAX_CONCURRENCY`),超出排队(上限 `DEVECO_MAX_QUEUE=3`,再超出直接 429),排队请求入场前冷却 `DEVECO_QUEUE_COOLDOWN_SEC`(默认 1s)。`/v2/status` 等元数据端点不排队
 
 ## 其他模块

@@ -8,7 +8,7 @@
 // has already run for /anthropic/v1/messages):
 //   - vision-capable model + images            → untouched
 //   - text-only model + image in NEWEST user message → model replaced with
-//     DEVECO_VISION_FALLBACK_MODEL; tools/tool_choice removed (Qwen VL models
+//     DEVECO_VISION_FALLBACK_MODEL; tools/tool_choice removed (vision models
 //     do not emit structured tool calls)
 //   - text-only model + images only in history → model untouched, old image
 //     parts replaced with a "[图片]" text placeholder so the text model keeps

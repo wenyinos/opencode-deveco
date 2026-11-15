@@ -38,8 +38,8 @@ describe("vision routing", () => {
       tool_choice: "auto",
     })!
     expect(r.rerouted).toBe(true)
-    expect(r.upstreamModel).toBe("Qwen3_VL_235B_A22B_Instruct")
-    expect(r.body.model).toBe("Qwen3_VL_235B_A22B_Instruct")
+    expect(r.upstreamModel).toBe("Qwen3_5_397B_A17B_w8a8_single")
+    expect(r.body.model).toBe("Qwen3_5_397B_A17B_w8a8_single")
     // VL models don't do structured tool calls — tools must not leak through.
     expect("tools" in r.body).toBe(false)
     expect("tool_choice" in r.body).toBe(false)
@@ -51,7 +51,7 @@ describe("vision routing", () => {
       messages: [{ role: "user", content: [{ type: "text", text: "看这个图" }, imagePart()] }],
     })!
     expect(r.rerouted).toBe(true)
-    expect(r.upstreamModel).toBe("Qwen3_VL_235B_A22B_Instruct")
+    expect(r.upstreamModel).toBe("Qwen3_5_397B_A17B_w8a8_single")
   })
 
   it("routes when the current turn's tool message contains an image", () => {
@@ -64,7 +64,7 @@ describe("vision routing", () => {
       ],
     })!
     expect(r.rerouted).toBe(true)
-    expect(r.upstreamModel).toBe("Qwen3_VL_235B_A22B_Instruct")
+    expect(r.upstreamModel).toBe("Qwen3_5_397B_A17B_w8a8_single")
   })
 
   it("keeps a text-only model when images only exist in history, and strips them", () => {
@@ -85,7 +85,7 @@ describe("vision routing", () => {
 
   it("leaves vision-capable models and their images untouched", () => {
     const body = {
-      model: "Qwen3_VL_235B_A22B_Instruct",
+      model: "Qwen3_5_397B_A17B_w8a8_single",
       messages: [{ role: "user", content: [imagePart()] }],
       tools: [{ type: "function", function: { name: "x" } }],
     }

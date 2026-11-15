@@ -5,6 +5,11 @@
 //   packages/opencode/src/plugin/deveco-models.ts (DEVECO_DEFAULTS)
 // and stripped of fork-internal dependencies (Global.Path, Log, etc.).
 
+import { createRequire } from "node:module"
+
+const require = createRequire(import.meta.url)
+const packageJson = require("../package.json") as { version?: string }
+
 // ---------------------------------------------------------------------------
 // Provider identity
 // ---------------------------------------------------------------------------
@@ -42,8 +47,12 @@ export const DEVECO_EXIT_QUEUE_URL = `${DEVECO_BASE_URL}/sse/codeGenie/exitSessi
  * images (the upstream request 403s with "Full inference timed out"), so the
  * proxy transparently reroutes a turn whose *new* user message contains an
  * image to this vision-capable model. Override with DEVECO_VISION_MODEL.
+ *
+ * The previous fallback (Qwen3_VL_235B_A22B_Instruct) now rejects image
+ * requests with a 400 content-schema error; the upstream client moved to this
+ * model in `c65aa159f`.
  */
-export const DEVECO_VISION_FALLBACK_MODEL = "Qwen3_VL_235B_A22B_Instruct"
+export const DEVECO_VISION_FALLBACK_MODEL = "Qwen3_5_397B_A17B_w8a8_single"
 
 /**
  * Models that the proxy treats as text-only for the vision fallback above.
@@ -210,11 +219,13 @@ export interface ModelInfo {
   options?: Record<string, unknown>
 }
 
-/** Local plugin version, used in the modelConfig request as pluginVersion. */
+/**
+ * Local package version, used as modelConfig's pluginVersion and in the
+ * `x-deveco-client` header. Read from package.json so a systemd/standalone
+ * launch (where npm_package_version is unset) still reports the real version.
+ */
 export const PLUGIN_VERSION: string =
-  process.env.npm_package_version ||
-  // read from import.meta.url is unreliable after bundling; fall back to a literal
-  "0.1.0"
+  process.env.npm_package_version || packageJson.version || "0.0.0"
 
 export const DEVECO_DEFAULTS = {
   provider: {
@@ -237,8 +248,8 @@ export const DEVECO_DEFAULTS = {
         limit: { context: 202752, output: 131072 },
         modalities: { input: ["text"], output: ["text"] },
       },
-      "Qwen3_VL_235B_A22B_Instruct": {
-        name: "Qwen3_VL_235B_A22B_Instruct",
+      "Qwen3_5_397B_A17B_w8a8_single": {
+        name: "Qwen3_5_397B_A17B_w8a8_single",
         limit: { context: 32768, output: 8192 },
         modalities: { input: ["text", "image"], output: ["text"] },
       },
@@ -246,8 +257,8 @@ export const DEVECO_DEFAULTS = {
   } satisfies ProviderInfo,
   taskDefaultModelMap: {
     small_model: "GLM-5.1",
-    ui_verification: "Qwen3_VL_235B_A22B_Instruct",
-    blacklist: "Qwen3_VL_235B_A22B_Instruct",
+    ui_verification: "Qwen3_5_397B_A17B_w8a8_single",
+    blacklist: "Qwen3_5_397B_A17B_w8a8_single",
   } as Record<string, string>,
 } as const
 

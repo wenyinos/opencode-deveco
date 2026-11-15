@@ -220,7 +220,7 @@ opencode run "say hi" -m deveco/GLM-5.1   # 通过代理发真实请求
 `GLM-5.1` / `GLM-5.3` 都是文本模型，带图片的请求会被上游拒绝（HTTP 403）。代理内置了一层**透明识图转发**，无需修改 opencode 配置：
 
 - **哪些模型算"文本-only"由上游模型配置自动判定**：代理读取 `modelConfig` 返回的 `input_modalities`，只声明 `["text"]` 的模型即视为文本模型（随模型列表缓存 1 小时）。上游新增模型或调整模型能力时无需改代码；模型配置尚不可用（冷启动、离线、未登录）时回退内置列表 `GLM-5.1,GLM-5.3`；
-- 请求模型是文本-only、且**最新一条用户消息含图片**时，代理自动改用视觉模型 `Qwen3_VL_235B_A22B_Instruct` 转发，响应原样返回，客户端无感知；
+- 请求模型是文本-only、且**最新一条用户消息含图片**时，代理自动改用视觉模型 `Qwen3_5_397B_A17B_w8a8_single` 转发，响应原样返回，客户端无感知；
 - 下一轮没有新图片时自动回到原模型，历史消息里的旧图片会被替换为 `[图片]` 占位符（上轮视觉模型得出的文字结论仍在历史里），避免文本模型再次报 403；
 - 转发到视觉模型时会移除 `tools` / `tool_choice` —— 该模型不输出结构化工具调用，直接以文字描述图片；
 - OpenAI 端点与 Anthropic 端点都适用，流式/非流式都支持。
@@ -228,14 +228,14 @@ opencode run "say hi" -m deveco/GLM-5.1   # 通过代理发真实请求
 日志中可看到路由动作：
 
 ```
--> POST no-stream model=GLM-5.1 → vision:Qwen3_VL_235B_A22B_Instruct
+-> POST no-stream model=GLM-5.1 → vision:Qwen3_5_397B_A17B_w8a8_single
 ```
 
 覆盖默认值的环境变量：
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `DEVECO_VISION_MODEL` | `Qwen3_VL_235B_A22B_Instruct` | 识图兜底模型 |
+| `DEVECO_VISION_MODEL` | `Qwen3_5_397B_A17B_w8a8_single` | 识图兜底模型 |
 | `DEVECO_TOOL_IMPROVEMENT` | `0` | 是否随推理请求发送 `X-DevEco-Improvement-Enabled`（对齐官方客户端“未同意即 false”），设 `1` 显式开启 |
 | `DEVECO_TEXT_ONLY_MODELS` | 自动（按上游 `input_modalities`） | 视为纯文本的模型，逗号分隔；显式设置时以此为准，模型配置不可用时回退内置 `GLM-5.1,GLM-5.3` |
 | `DEVECO_MAX_CONCURRENCY` | `1` | 允许同时在跑的生成回合数，超出部分按到达顺序排队（默认串行）；元数据接口（`/status`、`/models`、`/login`、`/logout`）不参与排队 |
@@ -264,7 +264,7 @@ DevEco 对短时间新建会话数量有限制（`UserSessionLimitExceeded`）�
 - **`deepseek-v4-flash` 是明确的硬限制**，上游报错会直接给出数字：`the prompt length 1044994 must less than the maximum input length 1044480`。超限即 `400`，边界干净。
 - **GLM-5.x 的拒绝不是长度报错**，而是 `403 ModelServiceError`：`Built-in model service is currently overloaded` / `Full inference timed out`（约 35 s 快速拒绝，不是真的跑满超时）。198K 稳定通过、204K 起稳定被拒，所以 ≈200K 是**观测量**而不是上游声明的限制；实际使用建议留余量（GLM-5.1 按 ~190K、GLM-5.3 按 ~180K 更稳，后者在 198K 时单次要 116 s）。
 - 同一段文本 GLM 的分词更省（约 1.17 tokens/词 vs deepseek 的 1.23），但可用容量仍差一个数量级。
-- **`deepseek-v4-flash` 是隐藏模型**：既不在 `GET /v2/models`，也不在上游 `modelConfig` 里（后者只有 `GLM-5.3` / `GLM-5.1` / `Qwen3_VL_235B_A22B_Instruct`）。靠模型列表自动拉取的客户端看不到它，必须手写模型名。代理对模型名不做限制，上游认识的 id 直接指定即可；缺点是它的元数据（上下文/模态/档位）上游一概不提供，所以默认列表里不会有它。需要时手工启用（以 opencode 为例，写进 `~/.config/opencode/opencode.json`）：
+- **`deepseek-v4-flash` 是隐藏模型**：既不在 `GET /v2/models`，也不在上游 `modelConfig` 里（后者只有 `GLM-5.3` / `GLM-5.1` / `Qwen3_5_397B_A17B_w8a8_single`）。靠模型列表自动拉取的客户端看不到它，必须手写模型名。代理对模型名不做限制，上游认识的 id 直接指定即可；缺点是它的元数据（上下文/模态/档位）上游一概不提供，所以默认列表里不会有它。需要时手工启用（以 opencode 为例，写进 `~/.config/opencode/opencode.json`）：
 
   ```json
   "provider": {
@@ -354,6 +354,8 @@ export ANTHROPIC_MODEL=GLM-5.1
 
 Claude Code 长会话跑几轮就报错的问题，以及登录相关的修复，是近期的主要工作。每一项的来龙去脉见 `git log`。
 
+- **网关请求头对齐上游契约** —— 推理和 `exitSessionQueue` 现在都带 `x-deveco-session` / `x-deveco-task` / `x-deveco-client`，两边共用同一个每轮 task id；`x-deveco-project` / `x-deveco-parent-session` 有则透传。旧的 `Chat-Id` / `Session-Id` 继续保留兼容。
+- **视觉兜底模型换代** —— 旧的 `Qwen3_VL_235B_A22B_Instruct` 现在对图片请求返回 400 内容校验错误；兜底已改为 `Qwen3_5_397B_A17B_w8a8_single`，并用真实图片请求验证通过。
 - **企业代理可用** —— 所有出站请求（登录、token 刷新、模型列表、推理）都会读取 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`，走 undici 的代理链路；公司网络里不用再额外配置，`NO_PROXY` 也按惯例生效。
 - **Improvement 上报默认关闭** —— `X-DevEco-Improvement-Enabled` 现在默认是 `false`，只有显式 `DEVECO_TOOL_IMPROVEMENT=1` 才开启，对齐官方客户端“没同意就不上报”的语义。
 - **非中国区账号在登录时就被拒** —— `nationalCode` 不是 `CN` 的账号会在登录阶段直接失败并给出可读提示，不再出现“登录成功、首个请求才 403”。

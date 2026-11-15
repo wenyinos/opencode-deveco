@@ -21,6 +21,7 @@ import {
   DEVECO_DEFAULTS,
   DEVECO_EXIT_QUEUE_URL,
   OAUTH_DUMMY_KEY,
+  PLUGIN_VERSION,
   PROVIDER_ID,
   type ModelInfo,
   type ProviderInfo,
@@ -47,7 +48,13 @@ const loginService = createLoginService(tokenStore)
 const sessionChatIdMap = new Map<string, string>()
 
 /** Release the upstream queue slot, matching proxy.ts semantics (one retry). */
-function exitQueue(key: string, chatId: string, model: string, token: string): void {
+function exitQueue(
+  key: string,
+  chatId: string,
+  model: string,
+  token: string,
+  taskId: string,
+): void {
   const url = `${DEVECO_EXIT_QUEUE_URL}?modelId=${encodeURIComponent(model)}`
   const attempt = (retriesLeft: number): void => {
     envFetch(url, {
@@ -56,6 +63,8 @@ function exitQueue(key: string, chatId: string, model: string, token: string): v
         "Content-Type": "application/json",
         "Session-Id": key,
         "Chat-Id": chatId,
+        "x-deveco-session": key,
+        "x-deveco-task": taskId,
         Authorization: `Bearer ${token}`,
       },
       signal: AbortSignal.timeout(5_000),
@@ -319,8 +328,13 @@ function buildAuthedFetch(
       chatId = crypto.randomUUID().replace(/-/g, "")
       sessionChatIdMap.set(convKey, chatId)
     }
+    const taskId =
+      headers.get("x-deveco-task")?.trim() || crypto.randomUUID().replace(/-/g, "")
     headers.set("Chat-Id", chatId)
     headers.set("Session-Id", convKey)
+    headers.set("x-deveco-session", convKey)
+    headers.set("x-deveco-task", taskId)
+    headers.set("x-deveco-client", `deveco-code@${PLUGIN_VERSION}`)
 
     const initForFetch: RequestInit = { ...init, headers }
     if (bodyForFetch !== undefined) initForFetch.body = bodyForFetch
@@ -329,7 +343,7 @@ function buildAuthedFetch(
 
     const directToUpstream = !isProxyUrl(requestInput)
     const token = current.access ?? ""
-    const release = () => exitQueue(convKey, chatId, upstreamModel, token)
+    const release = () => exitQueue(convKey, chatId, upstreamModel, token, taskId)
 
     let response: Response
     try {

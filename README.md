@@ -263,7 +263,7 @@ grow ~1.25× per step.
   1.23), yet its usable window is an order of magnitude smaller.
 - **`deepseek-v4-flash` is a hidden model**: it appears neither in
   `GET /v2/models` nor in the upstream `modelConfig` (which only lists
-  `GLM-5.3` / `GLM-5.1` / `Qwen3_VL_235B_A22B_Instruct`). Clients that build
+  `GLM-5.3` / `GLM-5.1` / `Qwen3_5_397B_A17B_w8a8_single`). Clients that build
   their model list dynamically will not see it — pin the model name by hand.
   The proxy does not gate model names, but the upstream publishes no metadata
   for it (context, modalities, tiers), which is why it stays out of the default
@@ -386,6 +386,15 @@ Long Claude Code sessions used to break after a few rounds; the fixes for that
 and for login are the recent bulk of the work. `git log` has the reasoning
 behind each.
 
+- **Gateway headers follow the upstream contract** — inference and
+  `exitSessionQueue` now send `x-deveco-session` / `x-deveco-task` /
+  `x-deveco-client`; the same per-turn task id is used on both calls, and
+  `x-deveco-project` / `x-deveco-parent-session` pass through when present.
+  The legacy `Chat-Id` / `Session-Id` headers are kept for compatibility.
+- **Vision fallback moved to the current model** — the old
+  `Qwen3_VL_235B_A22B_Instruct` now rejects image requests with a 400
+  content-schema error. The fallback is now
+  `Qwen3_5_397B_A17B_w8a8_single` (verified with a real image request).
 - **Corporate proxies work** — `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` are
   honoured on every outgoing request (login, token refresh, model list,
   inference) through undici. `NO_PROXY` is respected; no extra setup behind a

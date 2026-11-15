@@ -12,7 +12,7 @@ import {
   sessionKeyFromHeaders,
 } from "./proxy.js"
 import { JsonTokenStore } from "./token-store.js"
-import { log, maxQueue, queueCooldownMs } from "./config.js"
+import { log, maxQueue, PLUGIN_VERSION, queueCooldownMs } from "./config.js"
 
 // Helper: build a minimal JWT (header.payload.signature) with a given payload.
 function makeJwt(payload: Record<string, unknown>): string {
@@ -684,6 +684,73 @@ describe("DevEcoProxy integration", () => {
       args.some((a) => typeof a === "string" && a.includes("in=111 out=222")),
     )
     expect(logged).toBe(true)
+  })
+
+  it("sends the gateway task/session/client headers and mirrors them on exit", async () => {
+    const fresh = makeJwt({ userId: "u1", userName: "New", exp: Math.floor(Date.now() / 1000) + 3600 })
+    await new JsonTokenStore().save(fresh)
+    const p = await startProxy()
+
+    const seen: Array<{ url: string; headers: Record<string, string> }> = []
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url
+      if (url.includes("127.0.0.1")) return originalFetch(input, init)
+      const headers: Record<string, string> = {}
+      new Headers(init?.headers).forEach((value, key) => {
+        headers[key] = value
+      })
+      seen.push({ url, headers })
+      if (url.includes("jwToken/check")) {
+        return new Response(
+          JSON.stringify({
+            status: true,
+            userInfo: { accessToken: "mock-at", refreshToken: "mock-rt", nationalCode: "CN", realName: true },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        )
+      }
+      if (url.includes("/chat/completions")) {
+        return new Response(
+          JSON.stringify({
+            id: "chatcmpl-mock",
+            object: "chat.completion",
+            model: "GLM-5.1",
+            choices: [
+              {
+                index: 0,
+                message: { role: "assistant", content: "ok" },
+                finish_reason: "stop",
+              },
+            ],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        )
+      }
+      if (url.includes("exitSessionQueue")) return new Response("ok", { status: 200 })
+      return new Response("{}", { status: 404 })
+    }) as typeof fetch
+
+    const res = await fetch(`http://127.0.0.1:${p.getPort()}/v2/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-deveco-project": "proj-1" },
+      body: JSON.stringify({ model: "GLM-5.1", messages: [{ role: "user", content: "hi" }] }),
+    })
+    expect(res.status).toBe(200)
+    // exitQueue runs after the response is piped; give it a moment to land.
+    await new Promise((resolve) => setTimeout(resolve, 200))
+
+    const chat = seen.find((entry) => entry.url.includes("chat/completions"))
+    expect(chat).toBeDefined()
+    expect(chat!.headers["x-deveco-session"]).toBeTruthy()
+    expect(chat!.headers["x-deveco-task"]).toMatch(/^[0-9a-f]{32}$/)
+    expect(chat!.headers["x-deveco-client"]).toBe(`deveco-code@${PLUGIN_VERSION}`)
+    expect(chat!.headers["x-deveco-project"]).toBe("proj-1")
+
+    const exit = seen.find((entry) => entry.url.includes("exitSessionQueue"))
+    expect(exit).toBeDefined()
+    expect(exit!.headers["x-deveco-session"]).toBe(chat!.headers["x-deveco-session"])
+    expect(exit!.headers["x-deveco-task"]).toBe(chat!.headers["x-deveco-task"])
   })
 
   it("answers 500 instead of exiting when the upstream fetch fails", async () => {
