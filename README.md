@@ -221,6 +221,21 @@ opencode run "say hi" -m deveco/GLM-5.1-DevEco # real request through the proxy
 > docs use the `-DevEco` names. If you see `ProviderModelNotFoundError` with
 > `suggestions: ["GLM-5.1-DevEco"]`, switch to that name.
 
+### About the channel models
+
+The DevEco channel serves Ascend-quantized deployments, not the public Zhipu
+checkpoints. The ModelScope cards describe the two versions:
+
+| Exposed id | Channel model | Params | Weights | Quantization |
+|---|---|---:|---:|---|
+| `GLM-5.3-DevEco` | [`Eco-Tech/GLM-5.3-w8a8c8`](https://www.modelscope.cn/models/Eco-Tech/GLM-5.3-w8a8c8) | 755.71B | ~764 GB | W8A8C8: INT8 weight (per-channel), INT8 activation (per-token dynamic), INT8 KV cache (per-tile 128) |
+| `GLM-5.1-DevEco` | [`Eco-Tech/GLM-5.1-w4a8`](https://www.modelscope.cn/models/Eco-Tech/GLM-5.1-w4a8) | 395.82B | ~420 GB | W4A8 (the card does not expand the quantization recipe) |
+
+- Both are Ascend deployments. GLM-5.3 uses msModelSlim + QuaRot and is validated with vLLM-Ascend on Atlas A2/A3; GLM-5.1 is validated on Atlas 800T A3 with vLLM-Ascend.
+- Both ModelScope repositories are MIT-licensed. The base models keep their own licenses: GLM-5.3's original weights follow the ZhipuAI repository terms, and GLM-5.1's base is `zai-org/GLM-5.1`.
+- The cards do not declare a context or output limit for this channel. The 170,000 / 32,000 values in this README come from DevEco's `modelConfig`, not from the model cards.
+- GLM-5.1's card reports GPQA 87.3 against 86.2 official; GLM-5.3's card leaves the precision and deployment sections "to be added".
+
 ---
 
 ## Proxy endpoints

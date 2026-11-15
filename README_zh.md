@@ -196,6 +196,20 @@ opencode run "say hi" -m deveco/GLM-5.1-DevEco # 通过代理发真实请求
 
 > 对外模型 id 是 **`GLM-5.1-DevEco` / `GLM-5.3-DevEco`** —— 华为部署的版本，不是智谱公版。代理仍兼容旧的裸 id（`GLM-5.1` / `GLM-5.3`），但模型列表和文档统一用 `-DevEco` 名字。如果看到 `ProviderModelNotFoundError` 且 `suggestions: ["GLM-5.1-DevEco"]`，改成该名字即可。
 
+### 关于渠道模型
+
+DevEco 渠道提供的是昇腾量化部署版本，不是智谱公版权重。两个 ModelScope 模型卡的情况：
+
+| 对外模型 | 渠道模型 | 参数量 | 权重体积 | 量化 |
+|---|---|---:|---:|---|
+| `GLM-5.3-DevEco` | [`Eco-Tech/GLM-5.3-w8a8c8`](https://www.modelscope.cn/models/Eco-Tech/GLM-5.3-w8a8c8) | 755.71B | 约 764 GB | W8A8C8：INT8 权重（per-channel）、INT8 激活（per-token 动态）、INT8 KV Cache（per-tile 128） |
+| `GLM-5.1-DevEco` | [`Eco-Tech/GLM-5.1-w4a8`](https://www.modelscope.cn/models/Eco-Tech/GLM-5.1-w4a8) | 395.82B | 约 420 GB | W4A8（模型卡未展开具体量化配置） |
+
+- 两者都是昇腾部署：GLM-5.3 用 msModelSlim + QuaRot，在 Atlas A2/A3 上通过 vLLM-Ascend 验证；GLM-5.1 在 Atlas 800T A3 上通过 vLLM-Ascend 验证。
+- 两个 ModelScope 仓库都是 MIT License；基座模型许可单独适用：GLM-5.3 原始权重遵循 ZhipuAI/GLM-5.3 仓库条款，GLM-5.1 基座来自 `zai-org/GLM-5.1`。
+- 模型卡没有给出该渠道的上下文/最大输出声明；README 里的 170,000 / 32,000 来自 DevEco 的 `modelConfig`，不是模型卡。
+- GLM-5.1 模型卡给出 GPQA 87.3（官方 86.2）；GLM-5.3 模型卡的精度与部署章节仍标注“待补充”。
+
 ---
 
 ## 代理端点
