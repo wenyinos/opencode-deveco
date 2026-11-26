@@ -23,12 +23,15 @@ import {
   OAUTH_DUMMY_KEY,
   PLUGIN_VERSION,
   PROVIDER_ID,
+  defaultProjectId,
   exposedModelId,
   type ModelInfo,
+  newUpstreamTaskId,
   normalizeAffinityId,
   type ProviderInfo,
   log,
   upstreamModelId,
+  upstreamSessionId,
 } from "./config.js"
 import { createLoginService } from "./auth-login.js"
 import { JsonTokenStore } from "./token-store.js"
@@ -68,6 +71,7 @@ function exitQueue(
         "Chat-Id": chatId,
         "x-deveco-session": key,
         "x-deveco-task": taskId,
+        "User-Agent": `deveco/${PLUGIN_VERSION}`,
         Authorization: `Bearer ${token}`,
       },
       signal: AbortSignal.timeout(5_000),
@@ -354,14 +358,15 @@ function buildAuthedFetch(
       sessionChatIdMap.set(convKey, chatId)
     }
     const incomingTask = headers.get("x-deveco-task")
-    const taskId =
-      (incomingTask && normalizeAffinityId(incomingTask)) ||
-      crypto.randomUUID().replace(/-/g, "")
+    const taskId = (incomingTask && normalizeAffinityId(incomingTask)) || newUpstreamTaskId()
+    const sessionId = upstreamSessionId(convKey)
     headers.set("Chat-Id", chatId)
-    headers.set("Session-Id", convKey)
-    headers.set("x-deveco-session", convKey)
+    headers.set("Session-Id", sessionId)
+    headers.set("x-deveco-session", sessionId)
     headers.set("x-deveco-task", taskId)
     headers.set("x-deveco-client", `deveco-code@${PLUGIN_VERSION}`)
+    if (!headers.has("x-deveco-project")) headers.set("x-deveco-project", defaultProjectId())
+    headers.set("User-Agent", `deveco/${PLUGIN_VERSION}`)
 
     const initForFetch: RequestInit = { ...init, headers }
     if (bodyForFetch !== undefined) initForFetch.body = bodyForFetch
@@ -370,7 +375,7 @@ function buildAuthedFetch(
 
     const directToUpstream = !isProxyUrl(requestInput)
     const token = current.access ?? ""
-    const release = () => exitQueue(convKey, chatId, upstreamModel, token, taskId)
+    const release = () => exitQueue(sessionId, chatId, upstreamModel, token, taskId)
 
     let response: Response
     try {

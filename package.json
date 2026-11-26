@@ -1,6 +1,6 @@
 {
   "name": "opencode-deveco",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "description": "OpenCode plugin that brings DevEco Code (Huawei) account login and model access to standard opencode.",
   "type": "module",
   "license": "Apache-2.0",

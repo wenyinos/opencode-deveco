@@ -12,7 +12,7 @@ import {
   sessionKeyFromHeaders,
 } from "./proxy.js"
 import { JsonTokenStore } from "./token-store.js"
-import { log, maxQueue, PLUGIN_VERSION, queueCooldownMs } from "./config.js"
+import { log, maxQueue, PLUGIN_VERSION, queueCooldownMs, upstreamSessionId } from "./config.js"
 import { resetModelCache } from "./models.js"
 
 // Helper: build a minimal JWT (header.payload.signature) with a given payload.
@@ -815,10 +815,12 @@ describe("DevEcoProxy integration", () => {
 
     const chat = seen.find((entry) => entry.url.includes("chat/completions"))
     expect(chat).toBeDefined()
-    expect(chat!.headers["session-id"]).toBe("f1ad4a5feb2c41278d468de65ef8f7ec")
-    expect(chat!.headers["x-deveco-session"]).toBe("f1ad4a5feb2c41278d468de65ef8f7ec")
-    expect(chat!.headers["x-deveco-task"]).toMatch(/^[0-9a-f]{32}$/)
+    const expectedSession = upstreamSessionId("f1ad4a5feb2c41278d468de65ef8f7ec")
+    expect(chat!.headers["session-id"]).toBe(expectedSession)
+    expect(chat!.headers["x-deveco-session"]).toBe(expectedSession)
+    expect(chat!.headers["x-deveco-task"]).toMatch(/^msg_[0-9a-f]{26}$/)
     expect(chat!.headers["x-deveco-client"]).toBe(`deveco-code@${PLUGIN_VERSION}`)
+    expect(chat!.headers["user-agent"]).toBe(`deveco/${PLUGIN_VERSION}`)
     expect(chat!.headers["x-deveco-project"]).toBe("proj-1")
     // The public -DevEco name must not reach the upstream wire.
     expect(bodies[0]?.model).toBe("GLM-5.1")

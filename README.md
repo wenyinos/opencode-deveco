@@ -43,6 +43,7 @@ the proxy isn't needed. On current opencode, **the proxy is the live path**.
 - [opencode](https://opencode.ai) installed
 - Node 20+
 - A Huawei account on the **China** site
+- HUAWEI ID sign-in (OAuth) — the built-in DevEco models do not accept API keys. API-key auth still works for third-party providers you configure yourself, but those do not use the DevEco built-in catalog.
 
 ---
 
@@ -430,6 +431,12 @@ behind each.
   `Qwen3_VL_235B_A22B_Instruct` now rejects image requests with a 400
   content-schema error. The fallback is now
   `Qwen3_5_397B_A17B_w8a8_single` (verified with a real image request).
+- **Headers match the official CLI shape** — `User-Agent` is `deveco/<version>`,
+  `x-deveco-project` gets a 40-hex value (derived from the working directory,
+  override with `DEVECO_PROJECT_ID`), session ids use the `ses_` prefix and task
+  ids use `msg_`. Remaining differences: `x-deveco-client` carries this
+  project's version, Improvement defaults to `false` for privacy, and undici
+  adds `accept-language` / `sec-fetch-mode`.
 - **Corporate proxies work** — `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` are
   honoured on every outgoing request (login, token refresh, model list,
   inference) through undici. `NO_PROXY` is respected; no extra setup behind a

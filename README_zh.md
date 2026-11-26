@@ -33,6 +33,7 @@ opencode 插件（`src/plugin.ts`）保留作前向兼容：在**会**加载插�
 - 已安装 [opencode](https://opencode.ai)
 - Node 20+
 - **中国大陆**站点的华为账号
+- 华为账号 OAuth 登录 —— DevEco 内置模型不支持 API Key；API Key 只适用于你自行配置的第三方 provider，不走内置模型目录。
 
 ---
 
@@ -249,6 +250,7 @@ DevEco 渠道提供的是昇腾量化部署版本，不是智谱公版权重。�
 |---|---|---|
 | `DEVECO_VISION_MODEL` | `Qwen3_5_397B_A17B_w8a8_single` | 识图兜底模型 |
 | `DEVECO_TOOL_IMPROVEMENT` | `0` | 是否随推理请求发送 `X-DevEco-Improvement-Enabled`（对齐官方客户端“未同意即 false”），设 `1` 显式开启 |
+| `DEVECO_PROJECT_ID` | 自动（`cwd` 的 SHA1，40 位） | 上游 `x-deveco-project` 的值；官方 CLI 会发送 40 位项目 ID，代理默认按工作目录派生，可手工覆盖 |
 | `DEVECO_TEXT_ONLY_MODELS` | 自动（按上游 `input_modalities`） | 视为纯文本的模型，逗号分隔（写 `GLM-5.1-DevEco` 或上游 id `GLM-5.1` 都可）；显式设置时以此为准，模型配置不可用时回退内置 `GLM-5.1,GLM-5.3` |
 | `DEVECO_MAX_CONCURRENCY` | `1` | 允许同时在跑的生成回合数，超出部分按到达顺序排队（默认串行）；元数据接口（`/status`、`/models`、`/login`、`/logout`）不参与排队 |
 | `DEVECO_QUEUE_COOLDOWN_SEC` | `1` | 排队请求被放行前的冷却秒数（可小数如 `0.5`）；直接拿到空闲槽位的请求立即发出、不冷却，设 `0` 关闭 |
@@ -373,6 +375,7 @@ Claude Code 长会话跑几轮就报错的问题，以及登录相关的修复�
 - **渠道限制可见且会被执行** —— `/v2/models` 为 GLM-5.1-DevEco/5.3-DevEco 返回 `context_length: 170000` / `max_output_tokens: 32000`；超过 32K 的 `max_tokens` 会被压到 32K，上游明确的长度错误会附上渠道上限提示。GLM 的 403 `ModelServiceError` 保持原样——它既可能是长度也可能是过载，不能强行归因。
 - **网关请求头对齐上游契约** —— 推理和 `exitSessionQueue` 现在都带 `x-deveco-session` / `x-deveco-task` / `x-deveco-client`，两边共用同一个每轮 task id；`x-deveco-project` / `x-deveco-parent-session` 有则透传。旧的 `Chat-Id` / `Session-Id` 继续保留兼容。
 - **视觉兜底模型换代** —— 旧的 `Qwen3_VL_235B_A22B_Instruct` 现在对图片请求返回 400 内容校验错误；兜底已改为 `Qwen3_5_397B_A17B_w8a8_single`，并用真实图片请求验证通过。
+- **请求头对齐官方 CLI** —— `User-Agent` 改为 `deveco/<版本>`，`x-deveco-project` 默认生成 40 位项目 ID（可用 `DEVECO_PROJECT_ID` 覆盖），`Session-Id` / `x-deveco-session` 使用 `ses_` 前缀，`x-deveco-task` 使用 `msg_` 前缀，与官方 DevEco Code CLI 的实际请求头形状一致。仍保留的差异：`x-deveco-client` 使用本项目版本，Improvement 默认 `false`（隐私选择），以及 undici 自动附加的 `accept-language` / `sec-fetch-mode`。
 - **企业代理可用** —— 所有出站请求（登录、token 刷新、模型列表、推理）都会读取 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`，走 undici 的代理链路；公司网络里不用再额外配置，`NO_PROXY` 也按惯例生效。
 - **Improvement 上报默认关闭** —— `X-DevEco-Improvement-Enabled` 现在默认是 `false`，只有显式 `DEVECO_TOOL_IMPROVEMENT=1` 才开启，对齐官方客户端“没同意就不上报”的语义。
 - **非中国区账号在登录时就被拒** —— `nationalCode` 不是 `CN` 的账号会在登录阶段直接失败并给出可读提示，不再出现“登录成功、首个请求才 403”。

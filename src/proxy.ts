@@ -27,14 +27,17 @@ import {
   EXIT_QUEUE_GRACE_MS,
   PLUGIN_VERSION,
   UPSTREAM_IDLE_TIMEOUT_MS,
+  defaultProjectId,
   exposedModelId,
   log,
+  newUpstreamTaskId,
   maxConcurrency,
   maxQueue,
   normalizeAffinityId,
   queueCooldownMs,
   toolImprovementEnabled,
   upstreamModelId,
+  upstreamSessionId,
 } from "./config.js"
 import {
   CHINA_ACCOUNT_ONLY_MESSAGE,
@@ -522,6 +525,7 @@ export class DevEcoProxy {
             "Chat-Id": chatId,
             "x-deveco-session": key,
             "x-deveco-task": taskId,
+            "User-Agent": `deveco/${PLUGIN_VERSION}`,
             Authorization: `Bearer ${token}`,
           },
           signal: AbortSignal.timeout(5_000),
@@ -572,7 +576,7 @@ export class DevEcoProxy {
     taskId: string,
     req: http.IncomingMessage,
   ): Record<string, string> {
-    const project = requestHeader(req, "x-deveco-project")
+    const project = requestHeader(req, "x-deveco-project") ?? defaultProjectId()
     const parentRaw = requestHeader(req, "x-deveco-parent-session")
     const parentSession = parentRaw ? normalizeAffinityId(parentRaw) : undefined
     return {
@@ -584,11 +588,9 @@ export class DevEcoProxy {
       "x-deveco-session": convKey,
       "x-deveco-task": taskId,
       "x-deveco-client": `deveco-code@${PLUGIN_VERSION}`,
-      ...(project ? { "x-deveco-project": project } : {}),
+      "x-deveco-project": project,
       ...(parentSession ? { "x-deveco-parent-session": parentSession } : {}),
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-      "accept-language": "zh-CN",
+      "User-Agent": `deveco/${PLUGIN_VERSION}`,
       "X-DevEco-Improvement-Enabled": String(toolImprovementEnabled()),
     }
   }
@@ -976,11 +978,10 @@ export class DevEcoProxy {
     // DevEco-required headers. The task id correlates this turn with its
     // exitSessionQueue call; a client that already has one may pass it in.
     const chatId = this.chatIdFor(convKey)
+    const sessionId = upstreamSessionId(convKey)
     const incomingTask = requestHeader(req, "x-deveco-task")
-    const taskId = incomingTask
-      ? normalizeAffinityId(incomingTask)
-      : crypto.randomUUID().replace(/-/g, "")
-    const headers = this.buildDevEcoHeaders(accessToken, convKey, chatId, taskId, req)
+    const taskId = incomingTask ? normalizeAffinityId(incomingTask) : newUpstreamTaskId()
+    const headers = this.buildDevEcoHeaders(accessToken, sessionId, chatId, taskId, req)
 
     // DevEco rejects several OpenAI-side shapes (the "developer" role, the
     // tool_choice object form) and ignores max_completion_tokens; rewrite them
@@ -1100,7 +1101,7 @@ export class DevEcoProxy {
       budget.done()
       // Hand the slot over only once DevEco confirms its queue slot is gone
       // (bounded inside exitQueue), and only after this turn stopped streaming.
-      await this.exitQueue(convKey, chatId, upstreamModel, accessToken, taskId)
+      await this.exitQueue(sessionId, chatId, upstreamModel, accessToken, taskId)
       this.gate.release()
     }
   }
@@ -1179,11 +1180,10 @@ export class DevEcoProxy {
 
     const convKey = this.sessionKeyFromRequest(req) ?? conversationKey(anthropicReq)
     const chatId = this.chatIdFor(convKey)
+    const sessionId = upstreamSessionId(convKey)
     const incomingTask = requestHeader(req, "x-deveco-task")
-    const taskId = incomingTask
-      ? normalizeAffinityId(incomingTask)
-      : crypto.randomUUID().replace(/-/g, "")
-    const headers = this.buildDevEcoHeaders(accessToken, convKey, chatId, taskId, req)
+    const taskId = incomingTask ? normalizeAffinityId(incomingTask) : newUpstreamTaskId()
+    const headers = this.buildDevEcoHeaders(accessToken, sessionId, chatId, taskId, req)
 
     // Same cancellable wait as the OpenAI path, and the same teardown: the slot
     // goes to the next turn only after exitQueue settles. Callers that still owe
@@ -1215,7 +1215,7 @@ export class DevEcoProxy {
     const budget = idleBudget(UPSTREAM_IDLE_TIMEOUT_MS)
     const finishTurn = async (): Promise<void> => {
       budget.done()
-      await this.exitQueue(convKey, chatId, upstreamModel, accessToken, taskId)
+      await this.exitQueue(sessionId, chatId, upstreamModel, accessToken, taskId)
       this.gate.release()
     }
 

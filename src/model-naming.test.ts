@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest"
-import { exposedModelId, normalizeAffinityId, upstreamModelId } from "./config.js"
+import {
+  defaultProjectId,
+  exposedModelId,
+  newUpstreamTaskId,
+  normalizeAffinityId,
+  upstreamModelId,
+  upstreamSessionId,
+} from "./config.js"
 
 describe("model naming", () => {
   it("exposes the Huawei-deployed names and maps them back to wire ids", () => {
@@ -27,5 +34,22 @@ describe("normalizeAffinityId", () => {
     expect(normalizeAffinityId("s1")).toBe("s1")
     expect(normalizeAffinityId("x".repeat(40))).toMatch(/^[0-9a-f]{32}$/)
     expect(normalizeAffinityId("   ")).toBe("")
+  })
+})
+
+describe("official-shaped affinity values", () => {
+  it("emits a 40-hex project id and keeps an explicit override", () => {
+    expect(defaultProjectId("/tmp/project-a")).toMatch(/^[0-9a-f]{40}$/)
+    const old = process.env.DEVECO_PROJECT_ID
+    process.env.DEVECO_PROJECT_ID = "custom-project"
+    expect(defaultProjectId("/tmp/project-a")).toBe("custom-project")
+    if (old === undefined) delete process.env.DEVECO_PROJECT_ID
+    else process.env.DEVECO_PROJECT_ID = old
+  })
+
+  it("wraps arbitrary session/task ids in the official prefixes", () => {
+    expect(upstreamSessionId("219b2066a0d551cd8492764bc659d55f")).toMatch(/^ses_[0-9a-f]{24}$/)
+    expect(upstreamSessionId("ses_existing")).toBe("ses_existing")
+    expect(newUpstreamTaskId()).toMatch(/^msg_[0-9a-f]{26}$/)
   })
 })

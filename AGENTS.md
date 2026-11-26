@@ -57,7 +57,7 @@ opencode 已发布的二进制**不加载外部插件的 auth hooks**。实际�
 
 - 非流式必须用 `/no-stream/chat/completions` 路径(靠 URL 区分流式与否,不靠 body 的 `stream` 字段)
 - 必需 headers:`Authorization: Bearer`、`Chat-Id`(32 位去连字符 UUID)、`lang`、`User-Agent`、`accept-language`
-- 网关亲和 headers(对齐上游 `a0090b2d6`/`a074b2c6b`):`x-deveco-session`、`x-deveco-task`(每轮 32 位 id,推理与 exitSessionQueue 必须用同一个)、`x-deveco-client`(`deveco-code@<version>`);`x-deveco-project` / `x-deveco-parent-session` 有则透传。旧 `Chat-Id`/`Session-Id` 保留兼容
+- 网关亲和 headers(对齐上游 `a0090b2d6`/`a074b2c6b`):`x-deveco-session`、`x-deveco-task`(每轮 id,推理与 exitSessionQueue 必须用同一个)、`x-deveco-client`(`deveco-code@<version>`);`x-deveco-project` 客户端没有时由 `defaultProjectId()` 生成 40 位 SHA1(`DEVECO_PROJECT_ID` 可覆盖),`x-deveco-parent-session` 有则透传。`Session-Id`/`x-deveco-session` 用 `ses_` 前缀,`x-deveco-task` 用 `msg_` 前缀,`User-Agent` 为 `deveco/<PLUGIN_VERSION>`,与官方 CLI 的形状一致;旧 `Chat-Id`/`Session-Id` 保留兼容
 - 上游要求 `Session-Id` 不超过 32 字符(超过返回 `SSE request header Session-Id is too long`);客户端给的 `x-session-id`/`x-session-affinity`/`x-deveco-session` 必须过 `normalizeAffinityId()`(UUID 去连字符、超长稳定哈希),ZCode 发的就是 36 位 UUID
 - 对外模型 id 是 `GLM-5.1-DevEco` / `GLM-5.3-DevEco`(华为部署版,避免与智谱公版混淆);上游 wire 仍用 `GLM-5.1` / `GLM-5.3`(不是 `glm-5`),旧的裸 id 作为兼容别名继续接受;`deepseek-v4-flash` 是隐藏模型,不在动态模型列表中,须手工指定
 - 渠道对 GLM-5.1/5.3 的声明上限是 170K context / 32K output(低于官方规格);`/v2/models` 暴露 `context_length`/`max_output_tokens`,`openai-normalize.ts` 会把超过 32K 的 `max_tokens` clamp 到 32K;静态兜底 `DEVECO_MODEL_LIMITS` 必须与渠道一致

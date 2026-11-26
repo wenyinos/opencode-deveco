@@ -5,7 +5,7 @@
 //   packages/opencode/src/plugin/deveco-models.ts (DEVECO_DEFAULTS)
 // and stripped of fork-internal dependencies (Global.Path, Log, etc.).
 
-import { createHash } from "node:crypto"
+import { createHash, randomBytes } from "node:crypto"
 import { createRequire } from "node:module"
 
 const require = createRequire(import.meta.url)
@@ -207,6 +207,29 @@ export function normalizeAffinityId(value: string): string {
   if (UUID_PATTERN.test(trimmed)) return trimmed.replace(/-/g, "").toLowerCase()
   if (trimmed.length <= 32) return trimmed
   return createHash("sha256").update(trimmed).digest("hex").slice(0, 32)
+}
+
+/**
+ * The official CLI sends a 40-hex project id. A proxy does not know the
+ * client's workspace id, so derive a stable one from the proxy's working
+ * directory; DEVECO_PROJECT_ID can override it.
+ */
+export function defaultProjectId(seed: string = process.cwd()): string {
+  const configured = process.env.DEVECO_PROJECT_ID?.trim()
+  if (configured) return configured
+  return createHash("sha1").update(seed).digest("hex")
+}
+
+/** Official session ids look like `ses_<base62>`; keep a client-supplied one,
+ * otherwise derive a stable value within the gateway's 32-character limit. */
+export function upstreamSessionId(value: string): string {
+  if (value.startsWith("ses_") && value.length <= 32) return value
+  return `ses_${createHash("sha256").update(value).digest("hex").slice(0, 24)}`
+}
+
+/** Official task ids look like `msg_<base62>`; 30 characters fits the limit. */
+export function newUpstreamTaskId(): string {
+  return `msg_${randomBytes(13).toString("hex")}`
 }
 
 /** accessToken lifetime in ms (30 min, matching deveco-code). */
